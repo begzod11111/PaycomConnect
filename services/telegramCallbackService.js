@@ -29,7 +29,7 @@ export function clearUserState(userId, chatId) {
 }
 
 // Очистка старых состояний (старше 1 часа)
-setInterval(() => {
+const userStateCleanupInterval = setInterval(() => {
   const now = Date.now();
   for (const [key, value] of userStates.entries()) {
     if (now - value.timestamp > 3600000) {
@@ -37,6 +37,7 @@ setInterval(() => {
     }
   }
 }, 300000); // Каждые 5 минут
+userStateCleanupInterval.unref?.();
 
 // Генерация клавиатуры главного меню
 export function getMainMenuKeyboard() {

@@ -9,7 +9,6 @@ import { env } from './config/env.js';
 import apiRouter from './routes/api.js';
 import indexRouter from './routes/index.js';
 import { connectDatabase } from './services/databaseService.js';
-import {connectDB} from "./models/db.js";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -17,10 +16,13 @@ const __dirname = path.dirname(__filename);
 const app = express();
 
 
-connectDB(env.mongoUri).catch(error => {
-  console.error('MongoDB connection failed:', error.message);
-  process.exit(1);
-})
+connectDatabase().then((state) => {
+  if (state.mode === 'memory') {
+    console.warn(`MongoDB is not connected; using memory store (${state.lastError})`);
+  }
+}).catch((error) => {
+  console.error('MongoDB initialization failed:', error.message);
+});
 
 app.set('views', path.join(__dirname, 'views'));
 app.set('view engine', 'pug');

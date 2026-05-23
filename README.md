@@ -23,6 +23,11 @@ PaycomConnect — MVP-сервис для синхронизации комму�
 - `services/persistenceService.js` — хранение данных в MongoDB или памяти.
 - `models/*` — Mongoose-модели для CRM и JIRA.
 
+Дополнительная документация:
+
+- `docs/bridge-architecture.md` — текущие границы модулей и рекомендуемая архитектура Slack ↔ Telegram bridge.
+- `docs/slack-permissions.md` — минимальные Slack scopes с объяснением, какие текущие scopes можно удалить.
+
 ## Быстрый старт
 
 1. Установите зависимости.

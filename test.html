@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Title</title>
+</head>
+<body onload="Paycom.QR('#form-payme', '#qr-container')">
+<form id="form-payme" method="POST" action="https://checkout.paycom.uz/">
+    <input type="hidden" name="merchant" value="6231dc6d2642268aa4cedf99">
+    <input type="hidden" name="account[order_num]" value="841180">
+    <input type="hidden" name="amount" value="1500000">
+    <input type="hidden" name="lang" value="ru">
+    <input type="hidden" name="qr" data-width="250">
+    <div id="qr-container"></div>
+</form>
+<!-- ... -->
+<script src="https://cdn.paycom.uz/integration/js/checkout.min.js"></script>
+
+</body>
+</html>
+
+

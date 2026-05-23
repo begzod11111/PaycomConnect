@@ -1,0 +1,81 @@
+#!/usr/bin/env node
+
+import debugFactory from 'debug';
+import * as ngrok from "@ngrok/ngrok";
+import http from 'http';
+
+import { env } from '../config/env.js';
+import app from '../index.js';
+
+const debug = debugFactory('paycomconnect:server');
+const port = normalizePort(env.port || '9010');
+app.set('port', port);
+
+const server = http.createServer(app);
+
+async function setupNgrok() {
+  try {
+    const listener = await ngrok.connect({
+      addr: port,
+      authtoken: process.env.NGROK_AUTHTOKEN,
+      port: port,
+    });
+    console.log(`Ingress established at: ${listener.url()}`);
+    console.log(`Webhook URL for Jira: ${listener.url()}/login`);
+  } catch (error) {
+    console.error(`Error setting up ngrok: ${error.message}`);
+  }
+}
+
+
+server.listen(port, env.host);
+setupNgrok()
+server.on('error', onError);
+server.on('listening', onListening);
+
+function normalizePort(val) {
+  const normalizedPort = parseInt(val, 10);
+
+  if (Number.isNaN(normalizedPort)) {
+    return val;
+  }
+
+  if (normalizedPort >= 0) {
+    return normalizedPort;
+  }
+
+  return false;
+}
+
+function onError(error) {
+  if (error.syscall !== 'listen') {
+    throw error;
+  }
+
+  const bind = typeof port === 'string'
+    ? 'Pipe ' + port
+    : 'Port ' + port;
+
+  switch (error.code) {
+    case 'EACCES':
+      console.error(bind + ' requires elevated privileges');
+      process.exit(1);
+      break;
+    case 'EADDRINUSE':
+      console.error(bind + ' is already in use');
+      process.exit(1);
+      break;
+    default:
+      throw error;
+  }
+}
+
+function onListening() {
+  const addr = server.address();
+  const bind = typeof addr === 'string'
+    ? 'pipe ' + addr
+    : 'port ' + addr.port;
+
+  debug('Listening on ' + bind);
+  console.log(`PaycomConnect listening on http://${env.host}:${typeof addr === 'string' ? port : addr.port}`);
+}

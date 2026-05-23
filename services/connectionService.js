@@ -233,6 +233,31 @@ export async function activateTelegramByInn({
     throw new Error('telegramChatId is required for Telegram activation');
   }
 
+  if (!jiraTaskKey && !env.jiraBaseUrl) {
+    const connection = await upsertTelegramConnection({
+      inn,
+      telegramChatId,
+      telegramChatTitle,
+      telegramChatType,
+      telegramInitiatorId: userId,
+      telegramInitiatorName: userName,
+      metadata: {
+        lastTelegramActivationAt: new Date().toISOString(),
+        jiraDisabledAtActivation: true,
+      },
+    });
+
+    return {
+      status: connection.status,
+      connection,
+      integratorGreeting: '',
+      message:
+        connection.status === 'linked'
+          ? `✅ Связка по INN ${inn} завершена! Slack-канал уже подключен.`
+          : `✅ INN ${inn} сохранен! Ожидается подключение Slack-стороны.`,
+    };
+  }
+
   if (!jiraTaskKey || !jiraKeyPattern.test(jiraTaskKey)) {
     return {
       status: 'denied',

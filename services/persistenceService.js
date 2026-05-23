@@ -32,15 +32,14 @@ export async function findConnectionByInn(inn) {
   if (!inn) {
     return null;
   }
-    const connect = await models.ChannelLink.find({
-        inn: inn
-    })
-    if (!connect) {
-        return null;
-    }
+
+  if (isMongoConnected()) {
+    const connect = await models.ChannelLink.findOne({ inn }).lean();
+    return connect || null;
+  }
 
   console.log('🔍 Searching connection in memory by INN:', inn);
-  return toPlainObject(connect[0]) || null;
+  return memoryStore.channelLinks.get(String(inn)) || null;
 }
 
 export async function findConnectionBySourceChannel(source, channelId) {
@@ -321,11 +320,13 @@ export async function listConnections() {
 
 export async function getAnalyticsSummary() {
   if (isMongoConnected()) {
-    const [links, messages, contacts, jiraIssues] = await Promise.all([
+    const [links, messages, contacts, jiraIssues, firstInteractions, forwardedMessages] = await Promise.all([
       ChannelLink.find().lean(),
       Message.countDocuments(),
       Contact.countDocuments(),
       JiraIssue.countDocuments(),
+      Message.countDocuments({ firstInteraction: true }),
+      Message.countDocuments({ 'delivery.status': { $in: ['sent', 'mocked'] } }),
     ]);
 
     return {
@@ -334,7 +335,9 @@ export async function getAnalyticsSummary() {
       pendingConnections: links.filter((item) => item.status !== 'linked').length,
       totalMessages: messages,
       totalContacts: contacts,
+      firstInteractions,
       jiraIssuesTriggered: jiraIssues,
+      forwardedMessages,
     };
   }
 
@@ -344,7 +347,9 @@ export async function getAnalyticsSummary() {
     pendingConnections: [...memoryStore.channelLinks.values()].filter((item) => item.status !== 'linked').length,
     totalMessages: memoryStore.messages.length,
     totalContacts: memoryStore.contacts.size,
+    firstInteractions: memoryStore.messages.filter((item) => item.firstInteraction).length,
     jiraIssuesTriggered: memoryStore.jiraIssues.length,
+    forwardedMessages: memoryStore.messages.filter((item) => ['sent', 'mocked'].includes(item.delivery?.status)).length,
   };
 }
 
@@ -357,9 +362,89 @@ export function resetMemoryStore() {
   memoryStore.channelLinks.clear();
 }
 
-// Заглушки для других функций (если используются)
-export async function findMessageByExternalId() { return null; }
-export async function saveMessage(record) { return record; }
-export async function upsertContact() { return { isFirstInteraction: false }; }
-export async function saveJiraIssue() { return {}; }
-export async function getRecentMessages() { return []; }
+export async function findMessageByExternalId(source, externalId) {
+  if (isMongoConnected()) {
+    return Message.findOne({ source, externalId }).lean();
+  }
+
+  return memoryStore.messages.find(
+    (message) => message.source === source && String(message.externalId) === String(externalId),
+  ) || null;
+}
+
+export async function saveMessage(record) {
+  if (isMongoConnected()) {
+    return toPlainObject(await Message.create(record));
+  }
+
+  const message = {
+    ...record,
+    _id: record._id ?? `mem-msg-${memoryStore.messages.length + 1}`,
+    createdAt: record.createdAt ?? new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+  memoryStore.messages.push(message);
+  return message;
+}
+
+export async function upsertContact(record) {
+  const key = `${record.platform}:${record.userId}`;
+
+  if (isMongoConnected()) {
+    const existing = await Contact.findOne({ platform: record.platform, userId: String(record.userId) }).lean();
+    const contact = await Contact.findOneAndUpdate(
+      { platform: record.platform, userId: String(record.userId) },
+      {
+        $set: {
+          userName: record.userName ?? '',
+          channelId: String(record.channelId ?? ''),
+          lastInteractionAt: record.messageTimestamp ? new Date(record.messageTimestamp) : new Date(),
+        },
+        $setOnInsert: {
+          platform: record.platform,
+          userId: String(record.userId),
+          firstInteractionAt: record.messageTimestamp ? new Date(record.messageTimestamp) : new Date(),
+        },
+      },
+      { new: true, upsert: true, setDefaultsOnInsert: true },
+    ).lean();
+
+    return { contact, isFirstInteraction: !existing };
+  }
+
+  const existing = memoryStore.contacts.get(key);
+  const contact = {
+    ...(existing ?? {}),
+    platform: record.platform,
+    userId: String(record.userId),
+    userName: record.userName ?? existing?.userName ?? '',
+    channelId: String(record.channelId ?? existing?.channelId ?? ''),
+    firstInteractionAt: existing?.firstInteractionAt ?? record.messageTimestamp ?? new Date().toISOString(),
+    lastInteractionAt: record.messageTimestamp ?? new Date().toISOString(),
+  };
+  memoryStore.contacts.set(key, contact);
+
+  return { contact, isFirstInteraction: !existing };
+}
+
+export async function saveJiraIssue(record) {
+  if (isMongoConnected()) {
+    return toPlainObject(await JiraIssue.create(record));
+  }
+
+  const issue = {
+    ...record,
+    _id: record._id ?? `mem-jira-${memoryStore.jiraIssues.length + 1}`,
+    createdAt: record.createdAt ?? new Date().toISOString(),
+  };
+  memoryStore.jiraIssues.push(issue);
+  return issue;
+}
+
+export async function getRecentMessages(limit = 20) {
+  if (isMongoConnected()) {
+    return Message.find().sort({ createdAt: -1 }).limit(limit).lean();
+  }
+
+  return memoryStore.messages.slice(-limit).reverse();
+}

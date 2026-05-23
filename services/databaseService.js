@@ -44,6 +44,6 @@ export function getDatabaseStatus() {
 }
 
 export function isMongoConnected() {
-  return true;
+  return state.connected;
 }
 

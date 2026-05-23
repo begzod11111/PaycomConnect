@@ -28,12 +28,13 @@ const TEST_EMAIL_PREFIXES = ['begzod0426_test'];
 const sessions = new Map();
 
 // Автоочистка сессий старше 30 минут
-setInterval(() => {
+const telegramOnboardingSessionCleanupInterval = setInterval(() => {
   const cutoff = Date.now() - 30 * 60 * 1000;
   for (const [key, val] of sessions.entries()) {
     if (val.ts < cutoff) sessions.delete(key);
   }
 }, 5 * 60 * 1000);
+telegramOnboardingSessionCleanupInterval.unref?.();
 
 export class TelegramOnboardingService {
     // ── Telegram API helpers ────────────────────────────────────────────────────

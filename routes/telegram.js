@@ -29,7 +29,7 @@ const CONNECT_SESSION_TTL_MS = 10 * 60 * 1000;
 const GROUP_COMMAND_DELETE_MS = 45 * 1000;
 const groupConnectSessions = new Map();
 
-setInterval(() => {
+const groupConnectSessionCleanupInterval = setInterval(() => {
   const now = Date.now();
   for (const [chatId, session] of groupConnectSessions.entries()) {
     if (now - session.createdAt > CONNECT_SESSION_TTL_MS) {
@@ -37,6 +37,7 @@ setInterval(() => {
     }
   }
 }, 60 * 1000);
+groupConnectSessionCleanupInterval.unref?.();
 
 function isConnectStartCommand(text) {
   return /^\/connect(?:@\w+)?$/i.test(String(text ?? '').trim());

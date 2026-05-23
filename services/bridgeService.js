@@ -200,8 +200,6 @@ export async function processInboundMessage(source, payload) {
     };
   }
 
-  processedMessageIds.set(dedupeKey, Date.now());
-
   const connectCommand = parseConnectCommand(normalized.text);
 
   if (connectCommand) {
@@ -236,6 +234,8 @@ export async function processInboundMessage(source, payload) {
       },
     };
   }
+
+  processedMessageIds.set(dedupeKey, Date.now());
 
   const crmResult = await registerInteraction(normalized);
   const routing = await resolveDestinationForMessage(normalized);

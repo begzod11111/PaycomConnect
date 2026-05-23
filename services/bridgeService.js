@@ -13,6 +13,7 @@ import { findMessageByExternalId, saveJiraIssue, saveMessage } from './persisten
 import { sendToSlack } from './slackService.js';
 import { sendToTelegram } from './telegramService.js';
 
+
 const processedMessageIds = new Map();
 const PROCESSED_MESSAGE_TTL_MS = 5 * 60 * 1000;
 

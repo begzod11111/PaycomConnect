@@ -17,7 +17,7 @@ import { sendToTelegram } from './telegramService.js';
 const processedMessageIds = new Map();
 const PROCESSED_MESSAGE_TTL_MS = 5 * 60 * 1000;
 
-setInterval(() => {
+const processedMessageCleanupInterval = setInterval(() => {
   const now = Date.now();
   for (const [key, ts] of processedMessageIds.entries()) {
     if (now - ts > PROCESSED_MESSAGE_TTL_MS) {
@@ -25,6 +25,7 @@ setInterval(() => {
     }
   }
 }, 60 * 1000);
+processedMessageCleanupInterval.unref?.();
 
 function toIsoTimestamp(value) {
   if (!value) {

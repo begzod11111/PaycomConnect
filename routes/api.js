@@ -2,6 +2,7 @@ import express from 'express';
 
 import { env, integrationFlags } from '../config/env.js';
 import { getConnectionOverview, normalizeInn } from '../services/connectionService.js';
+import { processInboundMessage } from '../services/bridgeService.js';
 import { getDatabaseStatus } from '../services/databaseService.js';
 import { getAnalyticsSummary, getRecentMessages, findConnectionByInn } from '../services/persistenceService.js';
 import { ChannelLink } from '../models/channelLink.js';
@@ -21,6 +22,24 @@ router.use('/slack', slackRouter);
 // Для обратной совместимости (старые URL)
 router.use('/webhooks/telegram', telegramRouter);
 router.use('/webhooks/slack', slackRouter);
+
+router.post('/mock/telegram', async (req, res, next) => {
+  try {
+    const result = await processInboundMessage('telegram', req.body);
+    res.status(result.duplicate ? 200 : 201).json(result);
+  } catch (error) {
+    next(error);
+  }
+});
+
+router.post('/mock/slack', async (req, res, next) => {
+  try {
+    const result = await processInboundMessage('slack', req.body);
+    res.status(result.duplicate ? 200 : 201).json(result);
+  } catch (error) {
+    next(error);
+  }
+});
 
 // ========== Общие API endpoints ==========
 

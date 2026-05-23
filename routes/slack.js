@@ -158,6 +158,8 @@ router.post('/commands/connect', async (req, res, next) => {
     res.status(200).json({
       response_type: 'ephemeral',
       text: result.message,
+      status: result.status,
+      connection: result.connection,
       blocks: [
         {
           type: 'section',

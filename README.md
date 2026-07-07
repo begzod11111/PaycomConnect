@@ -25,6 +25,8 @@ PaycomConnect — MVP-сервис для синхронизации комму�
 
 Дополнительная документация:
 
+- `docs/system-overview.md` — краткая документация текущей системы: поток сообщений, структура каталогов, модели данных, endpoint'ы, конфигурация и известный технический долг.
+- `docs/architecture-recommendation.md` — рекомендация по архитектуре (монолит vs микросервисы), куда встраиваются Jira-автоматизация, интеграция с Balancer (Telegram → Telegram с лимитерами) и admin web, а также поэтапный roadmap.
 - `docs/bridge-architecture.md` — текущие границы модулей и рекомендуемая архитектура Slack ↔ Telegram bridge.
 - `docs/slack-permissions.md` — минимальные Slack scopes с объяснением, какие текущие scopes можно удалить.
 

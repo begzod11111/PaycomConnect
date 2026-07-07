@@ -171,18 +171,25 @@ pipeline (verify → enqueue → rate-limited deliver).
   Balancer forwarder is the **first clean extraction target** — it can become
   its own service consuming the shared queue without touching the support bridge.
 
-### 3. Admin web
+### 3. Admin web — via the tamada / Balancer UI (BFF pattern)
 
-Start **inside the monolith** under `api/admin/` behind authentication:
+Decision: **do not build a separate PaycomConnect UI.** Reuse the existing
+`tamada` frontend of the Balancer project and let PaycomConnect be a **headless
+service** behind it. The Balancer backend acts as the **BFF/gateway**: the
+browser talks only to Balancer (which owns user login), and Balancer calls
+PaycomConnect's data/admin API with a **service credential**.
 
-- Read views over existing data: connections, messages, delivery status,
-  onboarding queue, Jira automation runs, rate-limit/queue health.
-- Write actions: approve users, link/unlink INN, retry failed deliveries,
-  enable/disable automations.
-- UI: either server-rendered (a real `views/` template — note `GET /` is
-  currently broken) or a small SPA hitting `/api/admin`. Keep the API separate
-  from the UI so the UI can move out later.
-- **Extract only if** admin traffic or auth isolation demands it.
+- PaycomConnect exposes a stable data/admin API: connections, messages, delivery
+  status, onboarding queue, Jira automation runs, rate-limit/queue health; plus
+  write actions (approve users, link/unlink INN, retry deliveries, toggle
+  automations).
+- **User auth stays on the Balancer/authorization side.** PaycomConnect only
+  verifies the *calling service* — implemented now via a base64 `name:secret`
+  service token. See [`service-auth.md`](./service-auth.md).
+- Benefit: PaycomConnect can stay on a private network (only Telegram/Slack
+  webhooks are public), one UX, one login, minimal frontend work.
+- The broken server-rendered `GET /` becomes unnecessary; PaycomConnect stays
+  API-first.
 
 ### 4. Rate limiting (cross-cutting, needed regardless)
 
@@ -258,7 +265,8 @@ Everything up to here has already made these extractions mechanical.
 | How do we avoid a future rewrite? | **Queue/outbox seam + clear module boundaries** so any module extracts cleanly. |
 | First service to extract, later? | **Balancer Telegram→Telegram forwarder**, then the **Jira automation worker**. |
 | Where does rate limiting live? | Cross-cutting `infra/ratelimit` (outbound) + `express-rate-limit` (inbound) — added now. |
-| Where does the admin web start? | Inside the monolith under `api/admin/`, extractable later. |
+| Where does the admin web start? | No separate UI — reuse the tamada/Balancer frontend; PaycomConnect is a headless API behind a BFF. |
+| How does Balancer authenticate to us? | Per-service base64 `name:secret` token (implemented, see `service-auth.md`); user auth stays on Balancer. |
 | What must happen before new features? | Phase 0 hardening + Phase 1 seams. |
 
 This keeps us fast and cheap today while making the microservice path a

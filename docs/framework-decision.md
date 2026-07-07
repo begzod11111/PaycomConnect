@@ -5,6 +5,13 @@ You asked whether to do the big, entity-based rewrite on **NestJS** or on a
 target NestJS structure, and a migration plan that keeps the current bridge
 running.
 
+> **Status (confirmed):** NestJS + TypeScript + MongoDB, in-repo. Phase **R0**
+> (compiling Nest app: config, health, `ServiceAuthGuard`, permissions, Mongoose)
+> and **R1** (entity schemas) are scaffolded under `server/` and build cleanly
+> (`cd server && npm run build`). It runs on a separate port (`NEST_PORT`, default
+> 9020) so the Express bridge keeps serving webhooks during the migration. At
+> phase **R6** the Nest app moves to the repo root and Express is retired.
+
 ## Recommendation: NestJS + TypeScript
 
 **Go with NestJS.** For where PaycomConnect is heading — an entity/domain model,

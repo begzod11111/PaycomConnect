@@ -237,7 +237,7 @@ export async function setTelegramWebhook({ url, secretToken }) {
   const response = await axios.post(getTelegramApiUrl('setWebhook'), {
     url,
     secret_token: secretToken,
-    allowed_updates: ['message', 'edited_message', 'channel_post', 'my_chat_member'],
+    allowed_updates: ['message', 'edited_message', 'callback_query', 'channel_post', 'my_chat_member'],
     drop_pending_updates: false,
   });
 

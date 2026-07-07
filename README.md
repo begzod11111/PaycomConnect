@@ -30,6 +30,9 @@ PaycomConnect — MVP-сервис для синхронизации комму�
 - `docs/service-auth.md` — сервис-сервис авторизация (Balancer → PaycomConnect): схема `base64("name:secret")`, конфигурация, генерация ключа.
 - `docs/target-structure.md` — предлагаемая архитектура каталогов/файлов и пошаговая миграция (для анализа).
 - `docs/performance-and-media.md` — анализ задержек и пересылки медиа: причины, что уже исправлено, план ускорения.
+- `docs/framework-decision.md` — выбор фреймворка для рефакторинга (NestJS vs Express), целевая структура и стратегия миграции (strangler).
+- `docs/domain-model.md` — сущности (Organization, User, Chat, Membership, Connection, JiraTask, Message, OnboardingSession) и их связи.
+- `docs/onboarding-redesign.md` — как онбординг и connect работают сейчас и как переписываются вокруг сущностей.
 - `docs/bridge-architecture.md` — текущие границы модулей и рекомендуемая архитектура Slack ↔ Telegram bridge.
 - `docs/slack-permissions.md` — минимальные Slack scopes с объяснением, какие текущие scopes можно удалить.
 

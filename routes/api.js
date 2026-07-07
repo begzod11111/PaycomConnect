@@ -7,6 +7,7 @@ import { getDatabaseStatus } from '../services/databaseService.js';
 import { getAnalyticsSummary, getRecentMessages, findConnectionByInn } from '../services/persistenceService.js';
 import { ChannelLink } from '../models/channelLink.js';
 import { isMongoConnected } from '../services/databaseService.js';
+import { requireServiceAuth } from '../middleware/serviceAuth.js';
 
 // Импорт модульных роутеров
 import telegramRouter from './telegram.js';
@@ -40,6 +41,13 @@ router.post('/mock/slack', async (req, res, next) => {
     next(error);
   }
 });
+
+// ========== Защита сервисных данных (Balancer -> PaycomConnect) ==========
+// Data/admin API доступен только доверенным сервисам. Middleware выключено, пока
+// не настроен SERVICE_CLIENTS (см. docs/service-auth.md), поэтому dev/тесты не ломаются.
+router.use('/connections', requireServiceAuth);
+router.use('/analytics', requireServiceAuth);
+router.use('/messages', requireServiceAuth);
 
 // ========== Общие API endpoints ==========
 

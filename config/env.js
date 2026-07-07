@@ -41,6 +41,37 @@ function normalizeBaseUrl(value) {
   return `https://${raw}`;
 }
 
+// Разбирает список сервис-клиентов вида "name:secret,name2:secret2" в объект { name: secret }.
+// secret — это 36-символьный ключ (буквы/цифры), см. docs/service-auth.md.
+function parseServiceClients(value) {
+  const clients = {};
+  if (!value) {
+    return clients;
+  }
+
+  for (const pair of String(value).split(',')) {
+    const trimmed = pair.trim();
+    if (!trimmed) {
+      continue;
+    }
+
+    const separatorIndex = trimmed.indexOf(':');
+    if (separatorIndex === -1) {
+      continue;
+    }
+
+    const name = trimmed.slice(0, separatorIndex).trim();
+    const secret = trimmed.slice(separatorIndex + 1).trim();
+    if (name && secret) {
+      clients[name] = secret;
+    }
+  }
+
+  return clients;
+}
+
+const serviceClients = parseServiceClients(process.env.SERVICE_CLIENTS);
+
 export const env = {
   nodeEnv: process.env.NODE_ENV ?? 'development',
   port: Number(process.env.PORT ?? 9010),
@@ -63,6 +94,17 @@ export const env = {
   jiraIssueType: process.env.JIRA_ISSUE_TYPE ?? 'Task',
   enableLiveForwarding: toBoolean(process.env.ENABLE_LIVE_FORWARDING, true),
     telegramWebhookSecret: process.env.TELEGRAM_WEBHOOK_SECRET ?? '',
+  // Имя этого сервиса, к которому обращается Balancer (проверяется в заголовке X-Target-Service).
+  serviceName: process.env.SERVICE_NAME ?? 'paycomconnect',
+  // Реестр доверенных сервисов: { "<имя>": "<секрет>" }.
+  serviceClients,
+  // Enforcement: явный флаг перекрывает всё; иначе включается автоматически,
+  // как только настроен хотя бы один сервис-клиент. Без клиентов — выключено (dev/тесты).
+  serviceAuthEnabled:
+    process.env.SERVICE_AUTH_ENABLED !== undefined
+      ? toBoolean(process.env.SERVICE_AUTH_ENABLED, false)
+      : Object.keys(serviceClients).length > 0,
+  telegramWebhookUrl: process.env.TELEGRAM_WEBHOOK_URL ?? '',
 };
 
 export const integrationFlags = {

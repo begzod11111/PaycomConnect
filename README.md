@@ -25,6 +25,28 @@ PaycomConnect — MVP-сервис для синхронизации комму�
 
 Дополнительная документация:
 
+- `docs/system-overview.md` — краткая документация текущей системы: поток сообщений, структура каталогов, модели данных, endpoint'ы, конфигурация и известный технический долг.
+- `docs/architecture-recommendation.md` — рекомендация по архитектуре (монолит vs микросервисы), куда встраиваются Jira-автоматизация, интеграция с Balancer (Telegram → Telegram с лимитерами) и admin web, а также поэтапный roadmap.
+- `docs/service-auth.md` — сервис-сервис авторизация (Balancer → PaycomConnect): схема `base64("name:secret")`, конфигурация, генерация ключа.
+- `docs/target-structure.md` — предлагаемая архитектура каталогов/файлов и пошаговая миграция (для анализа).
+- `docs/performance-and-media.md` — анализ задержек и пересылки медиа: причины, что уже исправлено, план ускорения.
+- `docs/framework-decision.md` — выбор фреймворка для рефакторинга (NestJS vs Express), целевая структура и стратегия миграции (strangler).
+- `docs/domain-model.md` — сущности (Organization, User, Chat, Membership, Connection, JiraTask, Message, OnboardingSession) и их связи.
+- `docs/onboarding-redesign.md` — как онбординг и connect работают сейчас и как переписываются вокруг сущностей.
+- `docs/media-and-permissions.md` — метаданные сообщений, права по ролям (кто может слать файлы/аудио) и pipeline красивой передачи медиа.
+
+## NestJS-приложение (рефакторинг, фаза strangler)
+
+Новое приложение на NestJS (сущности, TypeScript, MongoDB) живёт в `server/` и
+работает параллельно с текущим Express-мостом (на порту `NEST_PORT`, по умолчанию
+9020). Подробности — в `docs/framework-decision.md`.
+
+```powershell
+cd server
+npm install
+npm run build      # проверка компиляции
+npm start          # требуется MONGODB_URI
+```
 - `docs/bridge-architecture.md` — текущие границы модулей и рекомендуемая архитектура Slack ↔ Telegram bridge.
 - `docs/slack-permissions.md` — минимальные Slack scopes с объяснением, какие текущие scopes можно удалить.
 
@@ -41,6 +63,18 @@ PaycomConnect — MVP-сервис для синхронизации комму�
 npm install
 Copy-Item .env.example .env
 npm start
+```
+
+### Вспомогательные скрипты
+
+```powershell
+# Настроить Telegram-бота (команды, описание; --webhook для установки вебхука)
+npm run setup:telegram
+npm run setup:telegram -- --webhook
+npm run setup:telegram -- --info
+
+# Сгенерировать 36-символьный ключ сервис-клиента для SERVICE_CLIENTS
+npm run gen:service-key balancer
 ```
 
 ## Основные endpoint'ы

@@ -471,7 +471,7 @@ export async function sendToTelegram(message) {
         // Если по какой-то причине все вложения упали, оставим хотя бы сообщение с автором.
         response = await axios.post(`https://api.telegram.org/bot${env.telegramBotToken}/sendMessage`, {
           chat_id: chatId,
-          text: authorText,
+          text: authorCaption,
           parse_mode: 'HTML',
         });
       }

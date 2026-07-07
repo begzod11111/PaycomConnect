@@ -798,17 +798,28 @@ router.post('/webhook', async (req, res, next) => {
 
       // Если это обычное сообщение (не INN), обрабатываем через bridge
       if (userMessageResult.type === 'normal_message') {
-        const bridgeResult = await processInboundMessage('telegram', update);
+        // Быстрый ACK Telegram: тяжёлую пересылку (в т.ч. скачивание/загрузку медиа)
+        // выполняем в фоне. Иначе Telegram ждёт медленный ответ, считает вебхук
+        // зависшим и ретраит апдейт — это и есть источник задержек и дублей.
+        res.status(200).json({ ok: true });
 
-        // Ответ по /connect прямо в группу
-        if (bridgeResult?.onboarding && bridgeResult?.command?.action === 'connect') {
-          await sendPrivateCommandResponse({
-            chatId,
-            userId,
-            text: bridgeResult.activation?.message ?? 'Команда обработана',
-            replyToMessageId: message.message_id,
+        processInboundMessage('telegram', update)
+          .then(async (bridgeResult) => {
+            // Ответ по /connect прямо в группу
+            if (bridgeResult?.onboarding && bridgeResult?.command?.action === 'connect') {
+              await sendPrivateCommandResponse({
+                chatId,
+                userId,
+                text: bridgeResult.activation?.message ?? 'Команда обработана',
+                replyToMessageId: message.message_id,
+              });
+            }
+          })
+          .catch((bridgeError) => {
+            console.error('[Telegram Webhook] Background bridge processing failed:', bridgeError);
           });
-        }
+
+        return;
       }
     }
 

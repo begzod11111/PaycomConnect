@@ -7,37 +7,13 @@ import {
   UnauthorizedException,
   ForbiddenException,
 } from '@nestjs/common';
-import { ConfigService } from '@nestjs/config';
 
-// Port of middleware/serviceAuth.js to a NestJS guard.
+import { env } from '../../core/env';
+
 // Authenticates the CALLING SERVICE (e.g. Balancer), not an end user.
 // Scheme: Authorization: Basic base64("<clientName>:<secret>")  (see docs/service-auth.md)
 @Injectable()
 export class ServiceAuthGuard implements CanActivate {
-  constructor(private readonly config: ConfigService) {}
-
-  private parseClients(): Record<string, string> {
-    const raw = this.config.get<string>('SERVICE_CLIENTS') ?? '';
-    const clients: Record<string, string> = {};
-    for (const pair of raw.split(',')) {
-      const trimmed = pair.trim();
-      const idx = trimmed.indexOf(':');
-      if (idx === -1) continue;
-      const name = trimmed.slice(0, idx).trim();
-      const secret = trimmed.slice(idx + 1).trim();
-      if (name && secret) clients[name] = secret;
-    }
-    return clients;
-  }
-
-  private isEnabled(clients: Record<string, string>): boolean {
-    const override = this.config.get<string>('SERVICE_AUTH_ENABLED');
-    if (override !== undefined && override !== '') {
-      return ['1', 'true', 'yes', 'on'].includes(override.toLowerCase());
-    }
-    return Object.keys(clients).length > 0;
-  }
-
   private safeEqual(a: string, b: string): boolean {
     const ba = Buffer.from(a, 'utf8');
     const bb = Buffer.from(b, 'utf8');
@@ -64,27 +40,21 @@ export class ServiceAuthGuard implements CanActivate {
   }
 
   canActivate(context: ExecutionContext): boolean {
+    if (!env.serviceAuthEnabled) return true; // disabled in dev/tests when no clients configured
+
     const req = context.switchToHttp().getRequest();
-    const clients = this.parseClients();
 
-    if (!this.isEnabled(clients)) {
-      return true; // disabled in dev/tests when no clients configured
-    }
-
-    const serviceName = this.config.get<string>('SERVICE_NAME') ?? 'paycomconnect';
     const target = req.headers['x-target-service'];
-    if (target && String(target).toLowerCase() !== serviceName.toLowerCase()) {
+    if (target && String(target).toLowerCase() !== String(env.serviceName).toLowerCase()) {
       throw new ForbiddenException('Request addressed to a different service');
     }
 
-    const credential = this.decode(
-      req.headers.authorization || req.headers['x-service-authorization'],
-    );
+    const credential = this.decode(req.headers.authorization || req.headers['x-service-authorization']);
     if (!credential?.name || !credential?.secret) {
       throw new UnauthorizedException('Service authorization required');
     }
 
-    const expected = clients[credential.name];
+    const expected = env.serviceClients[credential.name];
     if (!expected || !this.safeEqual(credential.secret, expected)) {
       throw new UnauthorizedException('Invalid service credentials');
     }

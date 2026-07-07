@@ -5,12 +5,24 @@ You asked whether to do the big, entity-based rewrite on **NestJS** or on a
 target NestJS structure, and a migration plan that keeps the current bridge
 running.
 
-> **Status (confirmed):** NestJS + TypeScript + MongoDB, in-repo. Phase **R0**
-> (compiling Nest app: config, health, `ServiceAuthGuard`, permissions, Mongoose)
-> and **R1** (entity schemas) are scaffolded under `server/` and build cleanly
-> (`cd server && npm run build`). It runs on a separate port (`NEST_PORT`, default
-> 9020) so the Express bridge keeps serving webhooks during the migration. At
-> phase **R6** the Nest app moves to the repo root and Express is retired.
+> **Status (confirmed):** NestJS + TypeScript + MongoDB, in-repo under `server/`.
+>
+> **Cutover progress:**
+> - R0 — done: config, `ServiceAuthGuard`, permissions, Mongoose, health.
+> - R1 — done: entity schemas (future model, under `src/domain/*`).
+> - **Core runtime — ported and tested (`cd server && npm test` → 10/10):** the
+>   full message bridge, `/connect` linking, delivery (Telegram/Slack incl. media),
+>   persistence (Mongo + in-memory fallback), Jira keyword issues, analytics, and
+>   the data/admin + webhook + mock endpoints now run on NestJS with identical
+>   behavior. Logic was ported near-verbatim into `server/src/runtime/*`.
+> - **Not yet ported (still served by the Express app):** user onboarding
+>   (Slack-DM + Telegram-DM), the Telegram inline-callback connect wizard, and the
+>   `/approve` slash command. These stay on Express until their NestJS port is
+>   verified — deleting them first would break live registration.
+>
+> Because those flows are not yet ported, the old Express structure is **kept**
+> for now. Once onboarding/callbacks/approve are ported and verified, Express is
+> deleted in one commit and the NestJS app becomes the sole deployable.
 
 ## Recommendation: NestJS + TypeScript
 

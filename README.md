@@ -50,6 +50,22 @@ npm test           # e2e-тесты (10/10)
 npm start          # запуск (MONGODB_URI опционально — есть memory-режим)
 ```
 
+### Публичный туннель ngrok (локальная разработка)
+
+Чтобы Telegram/Slack webhook'и доставали локальный сервер, при старте можно автоматически поднимать ngrok-туннель.
+
+```bash
+# .env
+NGROK_AUTHTOKEN=<токен с https://dashboard.ngrok.com/get-started/your-authtoken>
+# NGROK_DOMAIN=myapp.ngrok-free.app   # опционально, зарезервированный домен
+# NGROK_ENABLED=true                  # опционально; по умолчанию туннель поднимается
+#                                     # вне production, если задан NGROK_AUTHTOKEN
+```
+
+При старте в консоль выводится публичный URL и готовый адрес вебхука
+(`<ngrok-url>/api/telegram/webhook`). В production туннель по умолчанию не
+открывается; ошибка ngrok не роняет HTTP-сервер.
+
 ### Вспомогательные скрипты
 
 ```bash

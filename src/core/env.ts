@@ -54,6 +54,13 @@ export const env = {
   enableLiveForwarding: toBoolean(process.env.ENABLE_LIVE_FORWARDING, true),
   telegramWebhookSecret: process.env.TELEGRAM_WEBHOOK_SECRET ?? '',
   telegramWebhookUrl: process.env.TELEGRAM_WEBHOOK_URL ?? '',
+  // ngrok ingress (opened on start when an authtoken is present)
+  ngrokAuthtoken: process.env.NGROK_AUTHTOKEN ?? '',
+  ngrokDomain: process.env.NGROK_DOMAIN ?? '',
+  enableNgrok:
+    process.env.ENABLE_NGROK !== undefined && process.env.ENABLE_NGROK !== ''
+      ? toBoolean(process.env.ENABLE_NGROK, false)
+      : Boolean(process.env.NGROK_AUTHTOKEN),
   serviceName: process.env.SERVICE_NAME ?? 'paycomconnect',
   serviceClients,
   serviceAuthEnabled:

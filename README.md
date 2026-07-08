@@ -50,6 +50,11 @@ npm test           # e2e-тесты (10/10)
 npm start          # запуск (MONGODB_URI опционально — есть memory-режим)
 ```
 
+При `npm start` автоматически поднимается **ngrok**-туннель, если задан
+`NGROK_AUTHTOKEN` (и опционально бесплатный статический домен `NGROK_DOMAIN`).
+В логах печатаются готовые URL для вебхуков Telegram/Slack. Отключить —
+`ENABLE_NGROK=false`.
+
 ### Вспомогательные скрипты
 
 ```bash

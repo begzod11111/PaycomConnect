@@ -45,8 +45,14 @@ PaycomConnect — MVP-сервис для синхронизации комму�
 cd server
 npm install
 npm run build      # проверка компиляции
-npm start          # требуется MONGODB_URI
+npm test           # e2e-тесты ядра (10/10)
+npm start          # запуск (MONGODB_URI опционально — есть memory-режим)
 ```
+
+Ядро уже перенесено на NestJS (мост, `/connect`, доставка, персистентность,
+Jira, аналитика, data/admin API, вебхуки, mock). Онбординг, inline-визард
+Telegram и `/approve` пока обслуживаются Express-приложением и будут перенесены
+следующими — после этого Express удаляется. Детали — в `docs/framework-decision.md`.
 - `docs/bridge-architecture.md` — текущие границы модулей и рекомендуемая архитектура Slack ↔ Telegram bridge.
 - `docs/slack-permissions.md` — минимальные Slack scopes с объяснением, какие текущие scopes можно удалить.
 

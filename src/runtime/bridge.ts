@@ -10,7 +10,7 @@ import {
 import { registerInteraction } from './crm';
 import { maybeCreateJiraIssue } from './jira';
 import { findMessageByExternalId, saveJiraIssue, saveMessage } from './persistence';
-import { sendToSlack } from './slack';
+import { resolveSlackDisplayName, sendToSlack } from './slack';
 import { sendToTelegram } from './telegram';
 
 // Faithful port of services/bridgeService.js
@@ -194,6 +194,13 @@ export async function processInboundMessage(source: string, payload: any): Promi
   }
 
   processedMessageIds.set(dedupeKey, Date.now());
+
+  // Slack Events webhooks rarely carry a profile, so the author often arrives as
+  // a raw `user-<id>` fallback. Resolve a real display name before we persist
+  // and forward, so both CRM history and the forwarded message look native.
+  if (normalized.source === 'slack' && /^user-/.test(String(normalized.userName ?? ''))) {
+    normalized.userName = await resolveSlackDisplayName(normalized.userId, normalized.userName);
+  }
 
   const crmResult = await registerInteraction(normalized);
   const routing: any = await resolveDestinationForMessage(normalized);

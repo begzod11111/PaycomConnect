@@ -1,0 +1,61 @@
+# PaycomConnect deployment for the monitoring-jira.uz VM.
+#
+# The service is published ONLY on the loopback interface (127.0.0.1) and is
+# reached from the internet through the nginx reverse proxy in
+# deploy/nginx/ (subdomain: paycom.monitoring-jira.uz). This mirrors how the
+# existing "tamada" stack is exposed on the same host.
+#
+# Ports already in use on the host: 22, 80, 443, 3001, 8000, 8081, 27017.
+# PaycomConnect uses 9010, which is free.
+
+services:
+  paycomconnect:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: paycomconnect:latest
+    container_name: paycomconnect
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: "9010"
+    # Bind to loopback so only nginx (same host) can reach it.
+    ports:
+      - "127.0.0.1:${HOST_PORT:-9010}:9010"
+    # Guardrails so a single Node service can never starve the shared VM
+    # (2 vCPU / 7.7 GiB RAM, currently ~1 GiB free, no swap).
+    deploy:
+      resources:
+        limits:
+          cpus: "0.75"
+          memory: 512M
+        reservations:
+          memory: 128M
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - "fetch('http://127.0.0.1:9010/api/health').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3
+
+# When you later switch from cloud MongoDB to the on-VM tamada_mongo, attach
+# this service to the mongo container's network and point MONGODB_URI at it, e.g.:
+#
+# networks:
+#   default:
+#     name: <tamada_compose_network>
+#     external: true
+#
+# MONGODB_URI=mongodb://<user>:<pass>@tamada_mongo:27017/paycomconnect?authSource=admin

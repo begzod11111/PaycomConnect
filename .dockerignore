@@ -1,0 +1,17 @@
+node_modules
+dist
+*.tsbuildinfo
+.git
+.gitignore
+.idea
+public
+.env
+.env.*
+!.env.example
+npm-debug.log*
+Dockerfile
+.dockerignore
+docs
+test
+README.md
+deploy

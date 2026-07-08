@@ -233,6 +233,46 @@ export async function sendTelegramDocumentByUrl({ chatId, documentUrl, caption =
   return { ok: true, messageId: response.data.result.message_id, result: response.data.result };
 }
 
+export async function sendTelegramMessageWithKeyboard({ chatId, text, keyboard, replyToMessageId }: any) {
+  if (!env.telegramBotToken) throw new Error('TELEGRAM_BOT_TOKEN is required');
+  const response = await axios.post(getTelegramApiUrl('sendMessage'), {
+    chat_id: chatId,
+    text,
+    reply_markup: { inline_keyboard: keyboard },
+    reply_to_message_id: replyToMessageId,
+    parse_mode: 'HTML',
+  });
+  if (!response.data?.ok) throw new Error(`Failed to send message: ${response.data?.description ?? 'Unknown error'}`);
+  return { ok: true, messageId: response.data.result.message_id, result: response.data.result };
+}
+
+export async function answerCallbackQuery({ callbackQueryId, text, showAlert = false }: any) {
+  if (!env.telegramBotToken) throw new Error('TELEGRAM_BOT_TOKEN is required');
+  const response = await axios.post(getTelegramApiUrl('answerCallbackQuery'), {
+    callback_query_id: callbackQueryId,
+    text,
+    show_alert: showAlert,
+  });
+  if (!response.data?.ok) throw new Error(`Failed to answer callback: ${response.data?.description ?? 'Unknown error'}`);
+  return { ok: true };
+}
+
+export async function editTelegramMessage({ chatId, messageId, text, keyboard }: any) {
+  if (!env.telegramBotToken) throw new Error('TELEGRAM_BOT_TOKEN is required');
+  const payload: any = { chat_id: chatId, message_id: messageId, text, parse_mode: 'HTML' };
+  if (keyboard) payload.reply_markup = { inline_keyboard: keyboard };
+  const response = await axios.post(getTelegramApiUrl('editMessageText'), payload);
+  if (!response.data?.ok) throw new Error(`Failed to edit message: ${response.data?.description ?? 'Unknown error'}`);
+  return { ok: true, result: response.data.result };
+}
+
+export async function deleteTelegramMessage({ chatId, messageId }: any) {
+  if (!env.telegramBotToken) throw new Error('TELEGRAM_BOT_TOKEN is required');
+  const response = await axios.post(getTelegramApiUrl('deleteMessage'), { chat_id: chatId, message_id: messageId });
+  if (!response.data?.ok) throw new Error(`Failed to delete message: ${response.data?.description ?? 'Unknown error'}`);
+  return { ok: true };
+}
+
 export async function sendToTelegram(message: any) {
   const chatId = message.destinationChannelId || env.defaultTelegramChatId || message.channelId;
 

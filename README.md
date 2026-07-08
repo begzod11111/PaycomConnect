@@ -1,27 +1,29 @@
 # PaycomConnect
 
-PaycomConnect — MVP-сервис для синхронизации коммуникаций между Telegram и Slack с базовым CRM-слоем, аналитикой и подготовкой к интеграции с JIRA.
+PaycomConnect — сервис на **NestJS + TypeScript** для синхронизации коммуникаций между Telegram и Slack с CRM-слоем, аналитикой и интеграцией с Jira.
 
-## Что уже реализовано
+## Что реализовано
 
-- Прием сообщений из Telegram и Slack через webhook/mock endpoints.
-- Нормализация payload'ов обеих платформ в единый формат.
-- Логирование первого взаимодействия пользователя.
-- CRM-учет контактов и истории сообщений.
+- Приём сообщений из Telegram и Slack через webhook/mock endpoints.
+- Нормализация payload'ов обеих платформ в единый формат + пересылка (текст и медиа).
+- Онбординг пользователей (Slack-DM и Telegram-DM), `/approve`, connect-визард.
+- Связки Telegram-группа ↔ Slack-канал по ИНН + активация по Jira-задаче.
+- CRM-учёт контактов и истории сообщений.
 - In-memory режим без MongoDB и автоматическое переключение на MongoDB при наличии `MONGODB_URI`.
-- Триггер JIRA по ключевым словам (`оплата`, `ошибка`, `problem`, `issue`, `bug` и т.д.).
-- Mock/live режимы для Telegram, Slack и JIRA.
-- Базовая аналитика по сообщениям, первым обращениям и JIRA-trigger'ам.
+- Триггер Jira по ключевым словам; сервис-сервис авторизация для Balancer.
+- Базовая аналитика по сообщениям, первым обращениям и Jira-trigger'ам.
 
 ## Архитектура
 
-- `index.js` — инициализация Express-приложения.
-- `bin/www` — HTTP entrypoint.
-- `config/env.js` — загрузка и нормализация env-переменных.
-- `routes/api.js` — API и webhook маршруты.
-- `services/bridgeService.js` — центральный orchestration-слой обработки сообщений.
-- `services/persistenceService.js` — хранение данных в MongoDB или памяти.
-- `models/*` — Mongoose-модели для CRM и JIRA.
+Единое NestJS-приложение (Express-версия удалена):
+
+- `src/main.ts` — bootstrap (подключение к MongoDB + memory fallback).
+- `src/http/*` — контроллеры (webhooks, slash-команды, mock, data/admin API).
+- `src/runtime/*` — доменная логика: `bridge`, `connections`, `persistence`,
+  `telegram`/`slack`/`jira`, онбординг и connect-визард.
+- `src/common/*` — `ServiceAuthGuard` (авторизация Balancer) и модель прав по ролям.
+- `src/domain/*` — целевые сущности (Organization, User, Chat, Connection, Message …)
+  для дальнейшего перехода с legacy-моделей.
 
 Дополнительная документация:
 
@@ -35,45 +37,22 @@ PaycomConnect — MVP-сервис для синхронизации комму�
 - `docs/onboarding-redesign.md` — как онбординг и connect работают сейчас и как переписываются вокруг сущностей.
 - `docs/media-and-permissions.md` — метаданные сообщений, права по ролям (кто может слать файлы/аудио) и pipeline красивой передачи медиа.
 
-## NestJS-приложение (рефакторинг, фаза strangler)
+- `docs/bridge-architecture.md` — границы модулей и архитектура Slack ↔ Telegram bridge.
+- `docs/slack-permissions.md` — минимальные Slack scopes.
 
-Новое приложение на NestJS (сущности, TypeScript, MongoDB) живёт в `server/` и
-работает параллельно с текущим Express-мостом (на порту `NEST_PORT`, по умолчанию
-9020). Подробности — в `docs/framework-decision.md`.
+## Запуск
 
-```powershell
-cd server
+```bash
 npm install
-npm run build      # проверка компиляции
-npm test           # e2e-тесты ядра (10/10)
+cp .env.example .env
+npm run build      # сборка TypeScript
+npm test           # e2e-тесты (10/10)
 npm start          # запуск (MONGODB_URI опционально — есть memory-режим)
-```
-
-Ядро уже перенесено на NestJS (мост, `/connect`, доставка, персистентность,
-Jira, аналитика, data/admin API, вебхуки, mock). Онбординг, inline-визард
-Telegram и `/approve` пока обслуживаются Express-приложением и будут перенесены
-следующими — после этого Express удаляется. Детали — в `docs/framework-decision.md`.
-- `docs/bridge-architecture.md` — текущие границы модулей и рекомендуемая архитектура Slack ↔ Telegram bridge.
-- `docs/slack-permissions.md` — минимальные Slack scopes с объяснением, какие текущие scopes можно удалить.
-
-## Быстрый старт
-
-1. Установите зависимости.
-2. Скопируйте `.env.example` в `.env`.
-3. При необходимости укажите реальные ключи Telegram / Slack / JIRA.
-4. Запустите проект.
-
-### Команды
-
-```powershell
-npm install
-Copy-Item .env.example .env
-npm start
 ```
 
 ### Вспомогательные скрипты
 
-```powershell
+```bash
 # Настроить Telegram-бота (команды, описание; --webhook для установки вебхука)
 npm run setup:telegram
 npm run setup:telegram -- --webhook
@@ -85,53 +64,41 @@ npm run gen:service-key balancer
 
 ## Основные endpoint'ы
 
-### Служебные
+### Служебные (data/admin — под сервис-авторизацией)
 
-- `GET /` — веб-страница со статусом MVP.
 - `GET /api/health` — healthcheck и текущая аналитика.
 - `GET /api/analytics/summary` — агрегированная аналитика.
 - `GET /api/messages/recent` — последние сообщения.
+- `GET/PATCH/DELETE /api/connections[/:inn]`, `POST /api/connections/:inn/jira`.
 
 ### Mock endpoints
 
-#### Telegram → Slack
+```bash
+curl -X POST http://localhost:9010/api/mock/telegram -H 'Content-Type: application/json' \
+  -d '{"messageId":"tg-1","userId":"1001","userName":"Ali","channelId":"telegram-support","text":"Есть проблема с оплатой №12345"}'
 
-```powershell
-Invoke-RestMethod -Method Post -Uri http://localhost:9010/api/mock/telegram -ContentType 'application/json' -Body '{"messageId":"tg-1","userId":"1001","userName":"Ali","channelId":"telegram-support","text":"Есть проблема с оплатой №12345"}'
+curl -X POST http://localhost:9010/api/mock/slack -H 'Content-Type: application/json' \
+  -d '{"event_id":"slack-1","userId":"U100","userName":"Support Bot","channelId":"C123","text":"Problem with invoice 12345"}'
 ```
 
-#### Slack → Telegram
+### Webhooks и команды
 
-```powershell
-Invoke-RestMethod -Method Post -Uri http://localhost:9010/api/mock/slack -ContentType 'application/json' -Body '{"event_id":"slack-1","userId":"U100","userName":"Support Bot","channelId":"C123","text":"Problem with invoice 12345"}'
-```
-
-### Webhooks
-
-- `POST /api/webhooks/telegram`
-- `POST /api/webhooks/slack`
-
-> В Slack route поддерживает `url_verification` и игнорирует `bot_message` события.
+- `POST /api/telegram/webhook` — Telegram (онбординг, callback-визард, connect, мост).
+- `POST /api/slack/webhook` — Slack Events (онбординг DM, мост).
+- `POST /api/slack/commands/{connect,disconnect,approve,script,skript}` — slash-команды.
 
 ## Принцип работы
 
-1. Входящее сообщение попадает в API.
-2. `bridgeService` нормализует его и проверяет дубликаты.
+1. Входящее сообщение попадает в контроллер (webhook ACK'ается быстро).
+2. `runtime/bridge` нормализует его и проверяет дубликаты.
 3. Контакт обновляется в CRM; для первого сообщения это фиксируется отдельно.
-4. По правилам может быть создана задача в JIRA.
+4. По ключевым словам может быть создана задача в Jira.
 5. Сообщение отправляется в целевую платформу либо эмулируется в mock-режиме.
 6. Данные попадают в аналитику.
 
-## Проверка
-
-```powershell
-npm test
-```
-
 ## Следующие шаги
 
-- Добавить валидацию подписи Slack и Telegram secret token.
-- Пересылать файлы не только как метаданные, но и как реальные вложения.
-- Хранить mapping каналов/чатов Telegram ↔ Slack в отдельной коллекции.
-- Добавить правила категоризации задач JIRA и SLA-аналитику.
+- Очередь + исходящий rate-limit (для Balancer Telegram → Telegram и стабильной доставки медиа).
+- Переход с legacy-моделей (`runtime/models`) на сущности (`src/domain/*`) с backfill.
+- Хэширование секретов онбординга; вынос in-memory состояния в Redis.
 

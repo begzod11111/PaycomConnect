@@ -13,10 +13,10 @@ import { findConnectionBySourceChannel } from '../runtime/persistence';
 import { SlackApiService } from '../runtime/slack-api';
 import { ScriptService } from '../runtime/script';
 import { sendTelegramDocumentByUrl, sendTelegramReply } from '../runtime/telegram';
+import { handleDirectMessage, handleApproveCommand } from '../runtime/onboarding-slack';
 
-// Faithful port of routes/slack.js (slash commands, events webhook, mock).
-// NOTE: Slack-DM onboarding (handleDirectMessage) and /approve are not yet ported
-// and still run on the Express app until their NestJS port is verified.
+// Full port of routes/slack.js (slash commands incl. /approve, events webhook
+// with DM onboarding, interactivity, mock).
 @Controller('slack')
 export class SlackController {
   private async handleScript(body: any, res: Response) {
@@ -85,6 +85,40 @@ export class SlackController {
       response_type: 'ephemeral',
       text: `Скрипт -${normalizedCode} отправлен в Telegram (${sentFiles} файл(ов)).`,
     });
+  }
+
+  @Post('commands/approve')
+  async approve(@Body() body: any, @Res() res: Response) {
+    const payload = { text: body.text, user_id: body.user_id, response_url: body.response_url };
+    res.status(200).json({ response_type: 'ephemeral', text: '⏳ Команда принята, выполняю апрув...' });
+    setImmediate(async () => {
+      try {
+        const result = await handleApproveCommand(payload);
+        if (payload.response_url) await axios.post(payload.response_url, result);
+      } catch (backgroundError: any) {
+        console.error('Background /approve command failed:', backgroundError);
+        if (payload.response_url) {
+          await axios
+            .post(payload.response_url, { response_type: 'ephemeral', text: `❌ /approve failed: ${backgroundError.message}` })
+            .catch((e: any) => console.error('Failed to post /approve error:', e.message));
+        }
+      }
+    });
+  }
+
+  @Post('interactive')
+  async interactive(@Body() body: any, @Res() res: Response) {
+    try {
+      const payload = JSON.parse(body.payload);
+      switch (payload.type) {
+        case 'block_actions':
+        case 'view_submission':
+        default:
+          return res.status(200).json({ ok: true });
+      }
+    } catch {
+      return res.status(200).json({ ok: true });
+    }
   }
 
   @Post('commands/connect')
@@ -187,12 +221,16 @@ export class SlackController {
     if (body?.type === 'url_verification') {
       return res.status(200).json({ challenge: body.challenge });
     }
-    if (body?.event?.subtype === 'bot_message' || body?.event?.user === env.slackBotToken) {
+    if (body?.event?.subtype === 'bot_message' || body?.event?.bot_id) {
       return res.status(200).json({ ok: true, ignored: true });
     }
-    // DM onboarding (channel_type === 'im') is handled by the Express app until ported.
+    // DM onboarding (channel_type === 'im')
     if (body?.event?.channel_type === 'im') {
-      return res.status(200).json({ ok: true, ignored: true, note: 'onboarding_not_ported' });
+      res.status(200).json({ ok: true, onboarding: true });
+      handleDirectMessage(body.event).catch((error) =>
+        console.error('[Slack Webhook] onboarding DM failed:', error),
+      );
+      return;
     }
 
     // Fast ACK, forward in background.

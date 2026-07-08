@@ -21,7 +21,6 @@ is built around.
 | **JiraTask** | The activation task (PTI-key). A Connection cannot go live without an active one. | `jiraIssueKey` / `jiraTaskKeys[]` on `ChannelLink` + `JiraIssue` |
 | **Message** | A bridged message: source Chat, Connection, delivery status, attachments. | `Message` |
 | **OnboardingSession** | Persisted state of a User's registration flow (no more in-memory sessions). | in-memory `sessionState` in the onboarding services |
-| **ActionLog** | An append-only log of actions across the bridge (message received/forwarded, connect activated, Jira triggered). | new (was scattered `console.log`) |
 
 ## Relationships
 
@@ -95,23 +94,9 @@ inlined ids.
 task".
 
 ### Message
-`connection`, `sourceChat`, `source` (`telegram|slack`), `destination`,
-`direction` (`telegram_to_slack|slack_to_telegram`), `externalId` (unique with
-source), `text`, `format` (`text|file|mixed|empty`), `attachments[]`,
-`delivery` (`status|mode|delivered|providerMessageId|error|latencyMs`),
-`delivered` (bool), `author` (User/Identity ref) plus a `sender` classification
-(`type: employee|client|bot|system`, `isEmployee`, `userRef`, `role`) that flags
-whether the message came from **our side** (a registered employee) or a client,
-timestamps.
-
-### ActionLog
-A dedicated entity for **logs of actions** (kept separate from Message so
-operational history is queryable on its own). `action` (e.g.
-`message.received`, `message.forwarded`, `connection.activation`,
-`jira.triggered`), `category` (`message|connection|jira|onboarding|system`),
-`level` (`info|warn|error`), `source` (`telegram|slack|system`), `actor`
-(`userId|userName|isEmployee|userRef`), `connectionInn`, `externalId`,
-`message`, `context`, timestamps.
+`connection`, `sourceChat`, `source` (`telegram|slack`), `externalId` (unique
+with source), `text`, `attachments[]`, `delivery` (`status|mode|providerMessageId`),
+`author` (User/Identity ref), timestamps.
 
 ### OnboardingSession
 `user`/`identity`, `channel` (`telegram|slack`), `state`

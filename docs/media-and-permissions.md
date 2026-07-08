@@ -11,23 +11,50 @@ Related: [`domain-model.md`](./domain-model.md),
 
 ## Message metadata (what we store)
 
-Every bridged message is persisted with full metadata (NestJS
-`domain/messaging/message.schema.ts`):
+Every bridged message is persisted with full metadata. This is live in the
+runtime model (`runtime/models.ts` → `Message`, written by `runtime/bridge.ts`)
+and mirrored in the target entity (`domain/messaging/message.schema.ts`):
 
 - **Who**: `author { userId?, platform, externalId, displayName, username }`.
+- **Employee vs client**: `sender { type, isEmployee, userRef, role, status }`.
+  `type` is `employee | client | bot | system`; `isEmployee` is the explicit
+  "sent by our side, by our employees" flag; when the platform id matches a
+  registered `SlackUser`/`User`, we attach `userRef` + `role` so you can tell
+  "this is a person with such an id/name who exists in our system". Unknown
+  authors default to `client`.
 - **Which side / direction**: `source`, `destination`, `direction`
   (`telegram_to_slack` | `slack_to_telegram`), `sourceChat`, `connection`.
 - **When**: `receivedAt`, `sentAt`, `deliveredAt` (a full timeline), plus
   `delivery.latencyMs`.
-- **Size & format**: `textLength`, `totalSizeBytes`, and per-attachment
-  `kind` (photo/video/audio/voice/video_note/document), `mimeType`, `format`
-  (e.g. `jpg`, `mp4`, `ogg`), `sizeBytes`, `width`/`height`, `durationSec`, and
-  provider file ids.
-- **Outcome**: `delivery { status, mode, providerMessageId, error, attempts,
-  latencyMs }`.
+- **Format (text vs file)**: message-level `format`
+  (`text | file | mixed | empty`) says whether it was text, a file, or both.
+  Per-attachment: `kind` (photo/video/audio/voice/video_note/document),
+  `mimeType`, `format` (e.g. `jpg`, `mp4`, `ogg`), `sizeBytes`, `width`/`height`,
+  `durationSec`, and provider file ids. Plus `textLength`, `totalSizeBytes`.
+- **Delivered or not**: `delivered` (boolean) + `delivery { status, mode,
+  delivered, providerMessageId, error, attempts, latencyMs }`. `delivered` is
+  `true` only when the message was actually sent/rendered on the destination
+  (i.e. "interpreted in Slack/Telegram or not").
 
 This gives us the raw material for analytics (volume by format/size, latency,
-per-user activity) and for the blocking/limiting rules below.
+per-user activity, employee vs client split) and for the blocking/limiting rules
+below.
+
+## Action logs (separate entity)
+
+Operational history is stored in its own entity, kept separate from messages:
+`runtime/models.ts` → `ActionLog` (live, via `runtime/action-log.ts`) mirrored by
+`domain/logs/action-log.schema.ts`.
+
+Each log records `action` (e.g. `message.received`, `message.forwarded`,
+`message.not_forwarded`, `message.skipped`, `connection.activation`,
+`jira.triggered`), a `category` (`message | connection | jira | onboarding |
+system`), a `level` (`info | warn | error`), the `source` platform, an `actor`
+(`{ userId, userName, isEmployee, userRef }`), the related `connectionInn` and
+`externalId`, a human-readable `message`, and a free-form `context`.
+
+Read them with `GET /api/logs/recent?limit=&category=&action=&inn=` (service
+auth). `analytics/summary` also exposes `totalActionLogs` and `employeeMessages`.
 
 ## Permissions model
 

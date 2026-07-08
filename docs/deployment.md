@@ -134,6 +134,76 @@ npm run setup:telegram -- --webhook   # uses TELEGRAM_WEBHOOK_URL from .env
 
 ---
 
+## 6a. Git on the VM + rebuilding the image
+
+To pull/push code and rebuild the container from the VM, git needs to be
+configured once. Two helper scripts do this:
+
+### One-time git setup
+
+```bash
+# In the repo directory on the VM:
+GIT_USER_NAME="Deploy Bot" \
+GIT_USER_EMAIL="deploy@paycom" \
+GIT_REMOTE_URL="https://github.com/begzod11111/PaycomConnect.git" \
+GIT_BRANCH="master" \
+GITHUB_TOKEN="ghp_xxx"            # optional PAT (repo scope) for HTTPS push/pull
+./deploy/setup-git.sh
+```
+
+`deploy/setup-git.sh` is idempotent and:
+
+- marks the repo as a **safe.directory** (fixes "detected dubious ownership" on a
+  shared VM),
+- sets the commit **identity** (`user.name` / `user.email`),
+- sets `pull.ff only` for predictable pulls,
+- sets the **origin** remote,
+- optionally stores a **GitHub token** so HTTPS `git pull` / `git push` are not
+  prompted (`credential.helper store` → `~/.git-credentials`, chmod 600),
+- switches off a **detached HEAD** onto the target branch (common after a deploy
+  checked out a specific commit).
+
+> Prefer SSH? Skip `GITHUB_TOKEN`, add a deploy key to the VM
+> (`~/.ssh/id_ed25519`) and register its public part on GitHub, then use an
+> `git@github.com:...` URL for `GIT_REMOTE_URL`.
+
+### Pull + rebuild + restart
+
+```bash
+./deploy/deploy.sh                 # git pull -> docker build -> up -d -> health check
+NO_PULL=1 ./deploy/deploy.sh       # rebuild the current checkout without pulling
+GIT_BRANCH=master ./deploy/deploy.sh
+```
+
+`deploy/deploy.sh` fast-forward-pulls the branch, rebuilds the image via
+`docker compose build`, restarts with `docker compose up -d`, prunes dangling
+images, and polls `/api/health` until the container is healthy (printing recent
+logs and failing if it never comes up).
+
+---
+
+## 6b. Viewing the local dashboard (private)
+
+The app serves a small inspection dashboard (logs / messages / connections /
+system) at `/api/dashboard` — see [`local-dashboard.md`](./local-dashboard.md).
+It is **not** exposed publicly:
+
+- The nginx site config **returns 404 for `/api/dashboard`**, so it can never be
+  reached through `https://paycom.monitoring-jira.uz`.
+- In production it is also **disabled by default** (`NODE_ENV=production`); set
+  `ENABLE_DASHBOARD=true` in `.env` to turn it on for local viewing.
+
+Reach it over an SSH tunnel to the loopback-bound container port:
+
+```bash
+# On your laptop:
+ssh -L 9010:127.0.0.1:9010 <user>@35.223.106.176
+# then open in your browser:
+#   http://localhost:9010/api/dashboard
+```
+
+---
+
 ## 7. Verdict — can the VM handle it?
 
 **Yes, with one precaution.**

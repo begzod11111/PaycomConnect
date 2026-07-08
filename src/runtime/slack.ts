@@ -189,9 +189,23 @@ async function buildTelegramToSlackText(message: any) {
   return forwardedText;
 }
 
-async function uploadTelegramFileToSlack({ file, channel }: any) {
-  if (!file.fileId) return null;
+// Caption shown together with forwarded media. File-upload messages cannot use
+// per-user username/avatar customization, so the author identity is carried in
+// the comment text instead (bold name + optional Telegram @username).
+function buildSlackMediaComment(message: any, forwardedText: string) {
+  const userName = message.userName || env.slackBridgeBotName || 'Telegram User';
+  const tgUsername =
+    message.source === 'telegram' && message.metadata?.telegramUsername
+      ? `@${String(message.metadata.telegramUsername).replace(/^@+/, '')}`
+      : '';
+  const header = tgUsername ? `*${userName}*  ·  ${tgUsername}` : `*${userName}*`;
+  const body = String(forwardedText || '').trim();
+  return body ? `${header}\n${body}` : header;
+}
 
+// Upload a single Telegram file to Slack's staging storage WITHOUT finalizing it,
+// so several files can later be shared into the channel as one message.
+async function uploadTelegramFileToSlackStaging(file: any) {
   const getFileRes: any = await withRetry(() =>
     axios.get(`https://api.telegram.org/bot${env.telegramBotToken}/getFile`, { params: { file_id: file.fileId } }),
   );
@@ -224,15 +238,46 @@ async function uploadTelegramFileToSlack({ file, channel }: any) {
     }),
   );
 
+  return { id: uploadFileId, title: fileName };
+}
+
+// Finalize staged uploads: shares all files into the channel as a SINGLE message,
+// with the caption/author line as its comment.
+async function completeSlackUpload({ files, channel, initialComment }: any) {
+  const body: any = { files, channel_id: channel };
+  if (initialComment) body.initial_comment = initialComment;
   const response: any = await withRetry(() =>
-    axios.post(
-      'https://slack.com/api/files.completeUploadExternal',
-      { files: [{ id: uploadFileId, title: fileName }], channel_id: channel },
-      { headers: { Authorization: `Bearer ${env.slackBotToken}`, 'Content-Type': 'application/json' } },
-    ),
+    axios.post('https://slack.com/api/files.completeUploadExternal', body, {
+      headers: { Authorization: `Bearer ${env.slackBotToken}`, 'Content-Type': 'application/json' },
+    }),
   );
   if (!response.data?.ok) throw new Error(response.data?.error ?? 'Slack file upload failed');
-  return uploadFileId;
+  return response.data;
+}
+
+async function postSlackTextMessage(message: any, forwardedText: string, channel: string) {
+  const payload = await buildSlackMessagePayload({ ...message, forwardedText });
+  const customizeFields = payload.customizeFields ?? getSlackCustomizeFields();
+  const baseBody: any = { channel, text: payload.text, ...(payload.blocks ? { blocks: payload.blocks } : {}) };
+
+  let response: any = await axios.post(
+    'https://slack.com/api/chat.postMessage',
+    { ...baseBody, ...customizeFields },
+    { headers: { Authorization: `Bearer ${env.slackBotToken}` } },
+  );
+
+  if (!response.data?.ok && response.data?.error === 'missing_scope' && Object.keys(customizeFields).length) {
+    response = await axios.post('https://slack.com/api/chat.postMessage', baseBody, {
+      headers: { Authorization: `Bearer ${env.slackBotToken}` },
+    });
+  }
+  return response;
+}
+
+async function notifySlack(channel: string, text: string) {
+  await axios
+    .post('https://slack.com/api/chat.postMessage', { channel, text }, { headers: { Authorization: `Bearer ${env.slackBotToken}` } })
+    .catch(() => {});
 }
 
 export async function sendToSlack(message: any) {
@@ -244,54 +289,72 @@ export async function sendToSlack(message: any) {
 
   try {
     const forwardedText = message.source === 'telegram' ? await buildTelegramToSlackText(message) : message.text;
-    const payload = await buildSlackMessagePayload({ ...message, forwardedText });
-    const customizeFields = payload.customizeFields ?? getSlackCustomizeFields();
-    const baseBody: any = { channel, text: payload.text, ...(payload.blocks ? { blocks: payload.blocks } : {}) };
+    const hasFiles = Array.isArray(message.files) && message.files.length > 0;
 
-    let response: any = await axios.post(
-      'https://slack.com/api/chat.postMessage',
-      { ...baseBody, ...customizeFields },
-      { headers: { Authorization: `Bearer ${env.slackBotToken}` } },
+    // Text-only: keep the native per-user identity (username + avatar + blocks).
+    if (!hasFiles) {
+      const response = await postSlackTextMessage(message, forwardedText, channel);
+      if (!response.data?.ok) {
+        return { status: 'failed', mode: 'live', target: channel, error: response.data?.error ?? 'Unknown Slack API error' };
+      }
+      return { status: 'sent', mode: 'live', target: channel, providerMessageId: response.data?.ts ?? null };
+    }
+
+    // Media: upload every file, then share them as ONE message whose comment
+    // carries the author line + caption — instead of a separate text message
+    // followed by separate file messages.
+    const initialComment = buildSlackMediaComment(message, forwardedText);
+    const uploadResults: any[] = new Array(message.files.length).fill(null);
+    await processWithConcurrency(
+      message.files.map((file: any, index: number) => ({ file, index })),
+      FILE_UPLOAD_CONCURRENCY,
+      async ({ file, index }: any) => {
+        if (!file.fileId) return;
+        try {
+          uploadResults[index] = { ok: true, upload: await uploadTelegramFileToSlackStaging(file) };
+        } catch (fileError: any) {
+          uploadResults[index] = { ok: false, file, error: fileError };
+        }
+      },
     );
 
-    if (!response.data?.ok && response.data?.error === 'missing_scope' && Object.keys(customizeFields).length) {
-      response = await axios.post('https://slack.com/api/chat.postMessage', baseBody, {
-        headers: { Authorization: `Bearer ${env.slackBotToken}` },
-      });
-    }
+    const uploaded = uploadResults.filter((r) => r?.ok).map((r) => r.upload);
+    const failures = uploadResults.filter((r) => r && !r.ok);
+    let missingScopeDetected = failures.some((f) => String(f.error?.message ?? '').includes('missing_scope'));
 
-    if (!response.data?.ok) {
-      return { status: 'failed', mode: 'live', target: channel, error: response.data?.error ?? 'Unknown Slack API error' };
-    }
-
-    if (Array.isArray(message.files) && message.files.length) {
-      let missingScopeDetected = false;
-      await processWithConcurrency(message.files, FILE_UPLOAD_CONCURRENCY, async (file: any) => {
-        try {
-          await uploadTelegramFileToSlack({ file, channel });
-        } catch (fileError: any) {
-          if (String(fileError.message).includes('missing_scope')) {
-            missingScopeDetected = true;
-            return;
-          }
-          await axios.post(
-            'https://slack.com/api/chat.postMessage',
-            { channel, text: `⚠️ Не удалось переслать файл: ${file.name || file.type} (${fileError.message})` },
-            { headers: { Authorization: `Bearer ${env.slackBotToken}` } },
-          );
-        }
-      });
-
-      if (missingScopeDetected) {
-        await axios.post(
-          'https://slack.com/api/chat.postMessage',
-          { channel, text: '⚠️ Вложения из Telegram не загружены: у Slack-бота нет scope `files:write`.' },
-          { headers: { Authorization: `Bearer ${env.slackBotToken}` } },
-        );
+    let providerMessageId: any = null;
+    let mediaMessageSent = false;
+    if (uploaded.length) {
+      try {
+        const complete = await completeSlackUpload({ files: uploaded, channel, initialComment });
+        providerMessageId = complete?.files?.[0]?.id ?? null;
+        mediaMessageSent = true;
+      } catch (completeError: any) {
+        if (String(completeError.message ?? '').includes('missing_scope')) missingScopeDetected = true;
+        else failures.push({ file: null, error: completeError });
       }
     }
 
-    return { status: 'sent', mode: 'live', target: channel, providerMessageId: response.data?.ts ?? null };
+    // If no file could be shared, still deliver the text so the message content
+    // is not lost (native identity preserved).
+    if (!mediaMessageSent) {
+      const response = await postSlackTextMessage(message, forwardedText, channel);
+      if (!response.data?.ok) {
+        return { status: 'failed', mode: 'live', target: channel, error: response.data?.error ?? 'Unknown Slack API error' };
+      }
+      providerMessageId = response.data?.ts ?? providerMessageId;
+    }
+
+    for (const failure of failures) {
+      if (!failure.file) continue;
+      if (String(failure.error?.message ?? '').includes('missing_scope')) continue;
+      await notifySlack(channel, `⚠️ Не удалось переслать файл: ${failure.file.name || failure.file.type} (${failure.error?.message})`);
+    }
+    if (missingScopeDetected) {
+      await notifySlack(channel, '⚠️ Вложения из Telegram не загружены: у Slack-бота нет scope `files:write`.');
+    }
+
+    return { status: 'sent', mode: 'live', target: channel, providerMessageId };
   } catch (error) {
     return { status: 'failed', mode: 'live', target: channel, error: extractError(error) };
   }

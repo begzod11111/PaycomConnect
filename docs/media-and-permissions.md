@@ -93,12 +93,17 @@ Concrete rules so media renders natively, not as generic file dumps:
 
 Author identity is preserved and kept as native as possible:
 
-- **Telegram → Slack**: the sender name + avatar are shown on the Slack message
-  itself (via `chat.postMessage` customize / `icon_url`). Attachments are
-  uploaded as native Slack files with previews — no extra "Вложения: …" line is
-  added, since Slack already renders the file. Slack user ids are resolved to
-  real display names (DB first, then `users.info`, cached), so a message never
-  shows up as `user-U0894H03LE6`.
+- **Telegram → Slack**: text-only messages show the sender name + avatar on the
+  Slack message itself (via `chat.postMessage` customize / `icon_url`).
+  Messages **with media** are delivered as a **single** Slack message: all files
+  are staged with `files.getUploadURLExternal` and then shared together in one
+  `files.completeUploadExternal` call whose `initial_comment` carries the author
+  line + caption — instead of a separate caption message followed by a separate
+  file message. (File messages can't be identity-customized, so the author name
+  is written into the comment text.) No extra "Вложения: …" line is added, since
+  Slack already renders the file. Slack user ids are resolved to real display
+  names (DB first, then `users.info`, cached), so a message never shows up as
+  `user-U0894H03LE6`.
 - **Slack → Telegram**: the author name is rendered in bold on its own line
   (`<b>Name</b>`) followed by the original text, mirroring how Telegram shows a
   forwarded/quoted header — instead of the older custom `[Name] : text` prefix.

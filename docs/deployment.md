@@ -153,14 +153,21 @@ The app side is already set up on the VM under
 - [x] nginx vhost **staged** at `/etc/nginx/sites-available/paycom.monitoring-jira.uz`
       (not yet enabled); live nginx config untouched and valid.
 
-**Remaining (needs you):**
+- [x] Secrets filled in `.env`; app connected to cloud MongoDB
+      (`database.mode: mongodb, connected: true`, all integrations enabled).
+- [x] DNS `A` record `paycom.monitoring-jira.uz -> 35.223.106.176` created.
+- [x] TLS cert **expanded** to cover `paycom.monitoring-jira.uz` (valid ~90 days,
+      auto-renew scheduled); nginx site **enabled** and reloaded.
 
-1. Fill real secrets in `/home/behzod.t/paycomconnect/.env`, then
-   `bash deploy/vm-deploy.sh` to restart with the cloud `MONGODB_URI`.
-2. Add DNS `A` record `paycom.monitoring-jira.uz -> 35.223.106.176`.
-3. Run `sudo bash deploy/enable-subdomain.sh` — it verifies DNS, expands the TLS
-   cert to cover the subdomain, enables the nginx site, and reloads. After that:
-   `curl -s https://paycom.monitoring-jira.uz/api/health`.
+**Live:** `https://paycom.monitoring-jira.uz/api/health` returns `{"status":"ok",...}`
+(HTTP is 301-redirected to HTTPS). Telegram webhook URL:
+`https://paycom.monitoring-jira.uz/api/telegram/webhook`.
+
+> Note on certbot: our vhost references the Let's Encrypt cert files directly, so
+> certbot only needs to *obtain/expand* the cert (`certonly`), not install/rewrite
+> nginx. `deploy/enable-subdomain.sh` enables the site first, then expands the cert —
+> this avoids the "Could not automatically find a matching server block" installer
+> error.
 
 ---
 

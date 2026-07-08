@@ -33,22 +33,28 @@ if [ ! -f "${SITE_AVAILABLE}" ]; then
   exit 1
 fi
 
-echo "== 3/4 Expand TLS certificate to include ${DOMAIN} =="
+echo "== 3/4 Enable nginx site and reload =="
+# Enable BEFORE certbot: our vhost already points at the existing cert files, so
+# nginx -t / reload succeed even before the cert is expanded, and having the
+# server_name live lets certbot's http-01 challenge for ${DOMAIN} work.
+[ -L "${SITE_ENABLED}" ] || sudo ln -s "${SITE_AVAILABLE}" "${SITE_ENABLED}"
+sudo nginx -t
+sudo systemctl reload nginx
+
+echo "== 4/4 Expand TLS certificate to include ${DOMAIN} =="
 domain_args=(-d "${DOMAIN}")
 for d in "${BASE_DOMAINS[@]}"; do domain_args+=(-d "${d}"); done
-if sudo certbot certificates 2>/dev/null | grep -q "\b${DOMAIN}\b"; then
+if sudo certbot certificates 2>/dev/null | grep -qw "${DOMAIN}"; then
   echo "   cert already covers ${DOMAIN}; skipping issuance."
 else
   email_args=(--register-unsafely-without-email)
   [ -n "${CERTBOT_EMAIL}" ] && email_args=(-m "${CERTBOT_EMAIL}" --no-eff-email)
-  sudo certbot --nginx --expand --agree-tos --non-interactive \
+  # certonly: obtain/expand the cert only; we do NOT let certbot rewrite the
+  # vhost (it already references the cert paths directly).
+  sudo certbot certonly --nginx --expand --agree-tos --non-interactive \
     "${email_args[@]}" --cert-name monitoring-jira.uz "${domain_args[@]}"
+  sudo systemctl reload nginx
 fi
-
-echo "== 4/4 Enable nginx site and reload =="
-[ -L "${SITE_ENABLED}" ] || sudo ln -s "${SITE_AVAILABLE}" "${SITE_ENABLED}"
-sudo nginx -t
-sudo systemctl reload nginx
 
 echo
 echo "Done. Test:"

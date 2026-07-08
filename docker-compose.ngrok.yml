@@ -1,0 +1,43 @@
+# ngrok override for LOCAL / PRE-DEPLOY testing.
+#
+# Runs PaycomConnect + an ngrok tunnel so Telegram/Slack webhooks can reach the
+# app over a public HTTPS URL before the real subdomain (paycom.monitoring-jira.uz)
+# is set up.
+#
+# Usage:
+#   cp .env.example .env         # fill NGROK_AUTHTOKEN, TELEGRAM_BOT_TOKEN, MONGODB_URI, ...
+#   docker compose -f docker-compose.yml -f docker-compose.ngrok.yml up -d --build
+#   npm run webhook:ngrok        # reads the tunnel URL and points Telegram at it
+#
+# The ngrok inspector/API is exposed on http://127.0.0.1:4040 (tunnels at
+# http://127.0.0.1:4040/api/tunnels).
+
+services:
+  paycomconnect:
+    # ngrok reaches the app over the compose network as "paycomconnect:9010",
+    # so no host port publish is required in this mode.
+    ports: []
+
+  ngrok:
+    image: ngrok/ngrok:latest
+    container_name: paycomconnect_ngrok
+    restart: unless-stopped
+    environment:
+      NGROK_AUTHTOKEN: ${NGROK_AUTHTOKEN:?set NGROK_AUTHTOKEN in .env}
+      # Optional reserved/custom ngrok domain (e.g. my-app.ngrok-free.app or a
+      # custom domain). Leave empty to get a random URL each run.
+      NGROK_DOMAIN: ${NGROK_DOMAIN:-}
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        if [ -n "$$NGROK_DOMAIN" ]; then
+          exec ngrok http paycomconnect:9010 --domain "$$NGROK_DOMAIN" --log stdout
+        else
+          exec ngrok http paycomconnect:9010 --log stdout
+        fi
+    ports:
+      # ngrok web inspector + local API (used by scripts/ngrok-webhook.mjs).
+      - "127.0.0.1:4040:4040"
+    depends_on:
+      paycomconnect:
+        condition: service_healthy

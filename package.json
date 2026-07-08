@@ -10,6 +10,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "npm run build && node --test test/*.test.js",
     "setup:telegram": "node ./scripts/setup-telegram.mjs",
+    "webhook:ngrok": "node ./scripts/ngrok-webhook.mjs",
     "gen:service-key": "node ./scripts/gen-service-key.mjs"
   },
   "dependencies": {

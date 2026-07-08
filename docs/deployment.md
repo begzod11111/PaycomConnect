@@ -10,6 +10,10 @@ next to the existing **Tamada** stack on the GCP VM `35.223.106.176`:
 
 All numbers below were measured on the live VM (Ubuntu 25.10, 2 vCPU, 7.7 GiB RAM).
 
+> **Порядок работ:** сначала прогоняем сервис через **ngrok** (см.
+> [`docs/ngrok.md`](./ngrok.md)) с реальными webhook'ами, и только после проверки
+> делаем постоянный деплой на субдомен по этому документу.
+
 ---
 
 ## 1. Resource assessment (measured)

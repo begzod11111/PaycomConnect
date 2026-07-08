@@ -91,9 +91,22 @@ Concrete rules so media renders natively, not as generic file dumps:
 | Multiple images | grouped | `sendMediaGroup` (album), fallback to one-by-one |
 | Document | file with name/size | `sendDocument` with original filename |
 
-Author identity is preserved: Telegram sender name + avatar shown on the Slack
-message (via `chat.postMessage` customize), and `<b>[Name]</b>` prefix on the
-Telegram side, so both feel like a real forwarded conversation.
+Author identity is preserved and kept as native as possible:
+
+- **Telegram → Slack**: the sender name + avatar are shown on the Slack message
+  itself (via `chat.postMessage` customize / `icon_url`). Attachments are
+  uploaded as native Slack files with previews — no extra "Вложения: …" line is
+  added, since Slack already renders the file. Slack user ids are resolved to
+  real display names (DB first, then `users.info`, cached), so a message never
+  shows up as `user-U0894H03LE6`.
+- **Slack → Telegram**: the author name is rendered in bold on its own line
+  (`<b>Name</b>`) followed by the original text, mirroring how Telegram shows a
+  forwarded/quoted header — instead of the older custom `[Name] : text` prefix.
+  Media is sent with its native type (`sendPhoto`/`sendVideo`/… ), with the
+  author line as caption.
+
+The goal is that a bridged message reads like a real forwarded conversation on
+both sides rather than a custom bot dump.
 
 ### Reliability & limits (ties into blocking/analysis)
 

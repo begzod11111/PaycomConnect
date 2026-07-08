@@ -5,7 +5,9 @@
   "private": true,
   "scripts": {
     "build": "tsc -p tsconfig.json",
+    "prestart": "npm run build",
     "start": "node dist/main.js",
+    "dev": "ts-node src/main.ts",
     "start:dev": "ts-node src/main.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "npm run build && node --test test/*.test.js",

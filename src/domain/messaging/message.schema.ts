@@ -61,6 +61,19 @@ export class MessageAuthor {
 
   @Prop({ default: '' })
   username: string;
+
+  // Author classification: 'employee' means one of our people (a registered
+  // User), 'client' is the customer on the other side.
+  @Prop({ enum: ['employee', 'client', 'bot', 'system'], default: 'client' })
+  type: string;
+
+  // The flag: "sent by our side, by our employees".
+  @Prop({ default: false })
+  isEmployee: boolean;
+
+  // Employee role (manager/integrator/…) when known.
+  @Prop({ default: '' })
+  role: string;
 }
 
 export const MessageAuthorSchema = SchemaFactory.createForClass(MessageAuthor);
@@ -85,6 +98,11 @@ export class Delivery {
 
   @Prop({ default: 0 })
   latencyMs: number;
+
+  // Whether the message was actually delivered (rendered) on the destination
+  // side — a quick boolean mirror of `status`.
+  @Prop({ default: false })
+  delivered: boolean;
 }
 
 export const DeliverySchema = SchemaFactory.createForClass(Delivery);
@@ -119,6 +137,10 @@ export class Message {
 
   @Prop({ default: 0 })
   textLength: number;
+
+  // Content shape of the message: pure text, a file/attachment, both, or empty.
+  @Prop({ enum: ['text', 'file', 'mixed', 'empty'], default: 'text', index: true })
+  format: string;
 
   @Prop({ type: [AttachmentSchema], default: [] })
   attachments: Attachment[];

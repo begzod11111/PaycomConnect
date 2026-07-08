@@ -39,6 +39,7 @@ PaycomConnect — сервис на **NestJS + TypeScript** для синхро�
 
 - `docs/bridge-architecture.md` — границы модулей и архитектура Slack ↔ Telegram bridge.
 - `docs/slack-permissions.md` — минимальные Slack scopes.
+- `docs/local-dashboard.md` — локальная (непубличная) страница для визуального просмотра логов, сообщений, связок и состояния процесса.
 
 ## Запуск
 
@@ -46,7 +47,7 @@ PaycomConnect — сервис на **NestJS + TypeScript** для синхро�
 npm install
 cp .env.example .env
 npm run build      # сборка TypeScript
-npm test           # e2e-тесты (10/10)
+npm test           # e2e-тесты (13/13)
 npm start          # запуск (MONGODB_URI опционально — есть memory-режим)
 ```
 
@@ -65,6 +66,24 @@ NGROK_AUTHTOKEN=<токен с https://dashboard.ngrok.com/get-started/your-auth
 При старте в консоль выводится публичный URL и готовый адрес вебхука
 (`<ngrok-url>/api/telegram/webhook`). В production туннель по умолчанию не
 открывается; ошибка ngrok не роняет HTTP-сервер.
+
+### Локальная панель просмотра (dashboard)
+
+Непубличная страница для визуальной проверки: логи действий, сообщения (с
+метаданными: кто отправил — сотрудник или клиент, формат, доставлено ли),
+связки и состояние процесса. Данные простые (JSON под капотом), несколько
+страниц с понятным UX.
+
+```bash
+# по умолчанию включена вне production; чтобы форсировать:
+# .env
+ENABLE_DASHBOARD=true
+```
+
+Откройте `http://<host>:<PORT>/api/dashboard` (обычно через проброс порта /
+SSH-туннель, не наружу). Страницы: Overview, Messages, Logs, Connections.
+Только чтение, без авторизации — поэтому держите её локальной. Подробнее:
+[`docs/local-dashboard.md`](./docs/local-dashboard.md).
 
 ### Вспомогательные скрипты
 

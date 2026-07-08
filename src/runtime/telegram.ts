@@ -283,14 +283,10 @@ export async function sendToTelegram(message: any) {
   try {
     const renderedText = await renderSlackMentionsToTelegramHtml(message.text || '');
     const authorName = escapeHtml(String(message.userName || ''));
-    // Keep the forwarded message as close to a native Telegram message as
-    // possible: the author name in bold on its own line (like a forwarded /
-    // quoted header) followed by the original text, instead of a custom
-    // "[Name] : text" prefix.
     const forwardedText = authorName && renderedText
-      ? `<b>${authorName}</b>\n${renderedText}`
+      ? `<b>[${authorName}]</b> : ${renderedText}`
       : authorName
-        ? `<b>${authorName}</b>`
+        ? `<b>[${authorName}]</b>`
         : renderedText;
 
     const hasFiles = Array.isArray(message.files) && message.files.length > 0;

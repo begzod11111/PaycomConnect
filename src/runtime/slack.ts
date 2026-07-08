@@ -2,7 +2,6 @@ import axios from 'axios';
 
 import { env } from '../core/env';
 import { SlackUser } from './models';
-import { SlackApiService } from './slack-api';
 
 // Faithful port of services/slackService.js (outbound Telegram -> Slack delivery).
 const FILE_RETRY_ATTEMPTS = 3;
@@ -10,45 +9,6 @@ const FILE_RETRY_DELAY_MS = 700;
 const FILE_UPLOAD_CONCURRENCY = 2;
 const TELEGRAM_AVATAR_CACHE_TTL_MS = 10 * 60 * 1000;
 const telegramAvatarCache = new Map<string, any>();
-
-const SLACK_NAME_CACHE_TTL_MS = 30 * 60 * 1000;
-const slackNameCache = new Map<string, { name: string; ts: number }>();
-
-// Slack Events webhooks usually omit `user_profile`, so inbound messages fall
-// back to a raw `user-<id>` label. Resolve the real display name (DB first,
-// then Slack API, cached) so forwarded messages show a human name instead of an
-// internal Slack id.
-export async function resolveSlackDisplayName(userId: string, fallback: string): Promise<string> {
-  const id = String(userId || '').trim();
-  if (!id) return fallback;
-
-  try {
-    const dbUser: any = await SlackUser.findOne({ slackId: id }).select('displayName email').lean();
-    const dbName = dbUser?.displayName || dbUser?.email;
-    if (dbName) return dbName;
-  } catch {
-    // ignore DB lookup failures and fall through to the Slack API / cache.
-  }
-
-  const cached = slackNameCache.get(id);
-  if (cached && Date.now() - cached.ts < SLACK_NAME_CACHE_TTL_MS) return cached.name;
-
-  if (!env.slackBotToken) return fallback;
-
-  try {
-    const info: any = await SlackApiService.getUserInfo(id);
-    const resolved =
-      info?.profile?.real_name ||
-      info?.profile?.display_name ||
-      info?.real_name ||
-      info?.name ||
-      fallback;
-    slackNameCache.set(id, { name: resolved, ts: Date.now() });
-    return resolved;
-  } catch {
-    return fallback;
-  }
-}
 
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -156,9 +116,12 @@ async function buildSlackMessagePayload(message: any) {
   if (forwardedText) {
     blocks.push({ type: 'section', text: { type: 'mrkdwn', text: forwardedText } });
   }
-  // Attachments are uploaded to Slack as native files (with previews), so we
-  // deliberately do not add an extra "Вложения: <name>" line here — it would
-  // duplicate what Slack already renders and make the message look custom.
+  if (Array.isArray(message.files) && message.files.length) {
+    blocks.push({
+      type: 'context',
+      elements: [{ type: 'mrkdwn', text: `📎 Вложения: ${message.files.map((file: any) => file.name || file.type).join(', ')}` }],
+    });
+  }
 
   return { text: defaultText, blocks: blocks.length ? blocks : undefined, customizeFields };
 }

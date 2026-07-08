@@ -129,12 +129,38 @@ docker compose logs -f paycomconnect   # expect "listening on http://0.0.0.0:901
 curl -s http://127.0.0.1:9010/api/health   # {"status":"ok",...,"database":"connected"}
 ```
 
+Or use the helper: `bash deploy/vm-deploy.sh` (build + start + health check).
+
 Then run §4 to publish it on the subdomain, and (optionally) set the Telegram
 webhook:
 
 ```bash
 npm run setup:telegram -- --webhook   # uses TELEGRAM_WEBHOOK_URL from .env
 ```
+
+---
+
+## 6a. Current status on the VM (already prepared)
+
+The app side is already set up on the VM under
+`/home/cursor-gcp-vm/paycomconnect`:
+
+- [x] **2 GiB+ swap** added and enabled (`vm.swappiness=10`) — mitigates the tight RAM.
+- [x] Repo copied to `/home/cursor-gcp-vm/paycomconnect`, `.env` created from the
+      example (**secrets still empty** — fill `MONGODB_URI`, `TELEGRAM_BOT_TOKEN`, …).
+- [x] Docker image **built** (`paycomconnect:latest`) and container **running healthy**
+      on `127.0.0.1:9010` (memory mode until `MONGODB_URI` is set).
+- [x] nginx vhost **staged** at `/etc/nginx/sites-available/paycom.monitoring-jira.uz`
+      (not yet enabled); live nginx config untouched and valid.
+
+**Remaining (needs you):**
+
+1. Fill real secrets in `/home/cursor-gcp-vm/paycomconnect/.env`, then
+   `bash deploy/vm-deploy.sh` to restart with the cloud `MONGODB_URI`.
+2. Add DNS `A` record `paycom.monitoring-jira.uz -> 35.223.106.176`.
+3. Run `sudo bash deploy/enable-subdomain.sh` — it verifies DNS, expands the TLS
+   cert to cover the subdomain, enables the nginx site, and reloads. After that:
+   `curl -s https://paycom.monitoring-jira.uz/api/health`.
 
 ---
 

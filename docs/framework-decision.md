@@ -5,24 +5,21 @@ You asked whether to do the big, entity-based rewrite on **NestJS** or on a
 target NestJS structure, and a migration plan that keeps the current bridge
 running.
 
-> **Status (confirmed):** NestJS + TypeScript + MongoDB, in-repo under `server/`.
+> **Status: cutover complete.** The project is now a **single NestJS + TypeScript
+> app at the repo root** (MongoDB, in-memory fallback). The Express app
+> (`index.js`, `bin/`, `routes/`, `services/`, `models/`, `config/`, `middleware/`,
+> old `tests/`) has been **removed**.
 >
-> **Cutover progress:**
-> - R0 — done: config, `ServiceAuthGuard`, permissions, Mongoose, health.
-> - R1 — done: entity schemas (future model, under `src/domain/*`).
-> - **Core runtime — ported and tested (`cd server && npm test` → 10/10):** the
->   full message bridge, `/connect` linking, delivery (Telegram/Slack incl. media),
->   persistence (Mongo + in-memory fallback), Jira keyword issues, analytics, and
->   the data/admin + webhook + mock endpoints now run on NestJS with identical
->   behavior. Logic was ported near-verbatim into `server/src/runtime/*`.
-> - **Not yet ported (still served by the Express app):** user onboarding
->   (Slack-DM + Telegram-DM), the Telegram inline-callback connect wizard, and the
->   `/approve` slash command. These stay on Express until their NestJS port is
->   verified — deleting them first would break live registration.
+> Everything runs on NestJS: the message bridge, `/connect` linking, delivery
+> (Telegram/Slack incl. media), persistence, Jira keyword issues, analytics,
+> data/admin API (service-auth guarded), **user onboarding (Slack-DM + Telegram-DM),
+> the Telegram inline-callback wizard, the group connect session, and `/approve`**.
+> Build + tests: `npm run build` and `npm test` → 10/10.
 >
-> Because those flows are not yet ported, the old Express structure is **kept**
-> for now. Once onboarding/callbacks/approve are ported and verified, Express is
-> deleted in one commit and the NestJS app becomes the sole deployable.
+> Logic was ported near-verbatim into `src/runtime/*` (legacy Mongoose models kept
+> as `runtime/models.ts`). The next cleanup is migrating from those legacy models
+> to the entity schemas under `src/domain/*` (with a data backfill). The R0–R6
+> plan below is retained for historical context.
 
 ## Recommendation: NestJS + TypeScript
 

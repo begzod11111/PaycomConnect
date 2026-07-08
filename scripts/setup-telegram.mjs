@@ -3,25 +3,23 @@
 //
 // Требуется TELEGRAM_BOT_TOKEN в окружении (или в .env).
 // Использование:
-//   node ./scripts/setup-telegram.js               # команды + описания
-//   node ./scripts/setup-telegram.js --webhook      # + установить webhook из TELEGRAM_WEBHOOK_URL
-//   node ./scripts/setup-telegram.js --info         # только показать текущее состояние
-//
-// Тексты команд/описаний можно править прямо здесь, в блоках ниже.
+//   node ./scripts/setup-telegram.mjs               # команды + описания
+//   node ./scripts/setup-telegram.mjs --webhook      # + установить webhook из TELEGRAM_WEBHOOK_URL
+//   node ./scripts/setup-telegram.mjs --info         # только показать текущее состояние
 import axios from 'axios';
+import dotenv from 'dotenv';
 
-import { env } from '../config/env.js';
+dotenv.config();
+
+const env = {
+  telegramBotToken: process.env.TELEGRAM_BOT_TOKEN ?? '',
+  telegramWebhookUrl: process.env.TELEGRAM_WEBHOOK_URL ?? '',
+  telegramWebhookSecret: process.env.TELEGRAM_WEBHOOK_SECRET ?? '',
+};
 
 // ── Что показывать в меню бота ───────────────────────────────────────────────
-// Команды в личке (регистрация/онбординг).
-const PRIVATE_COMMANDS = [
-  { command: 'start', description: 'Регистрация и помощь' },
-];
-
-// Команды в группах (мост Telegram ↔ Slack).
-const GROUP_COMMANDS = [
-  { command: 'connect', description: 'Активировать связку: /connect <ИНН> <JIRA-KEY>' },
-];
+const PRIVATE_COMMANDS = [{ command: 'start', description: 'Регистрация и помощь' }];
+const GROUP_COMMANDS = [{ command: 'connect', description: 'Активировать связку: /connect <ИНН> <JIRA-KEY>' }];
 
 const BOT_SHORT_DESCRIPTION = 'PaycomConnect — мост между Telegram и Slack для поддержки клиентов.';
 const BOT_DESCRIPTION =
@@ -44,7 +42,6 @@ async function call(method, payload) {
 async function showInfo() {
   const me = await axios.get(apiUrl('getMe'));
   console.log('Bot:', me.data?.result?.username ? `@${me.data.result.username}` : me.data?.result);
-
   const webhook = await axios.get(apiUrl('getWebhookInfo'));
   console.log('Webhook:', JSON.stringify(webhook.data?.result, null, 2));
 }
@@ -62,16 +59,10 @@ async function main() {
     return;
   }
 
-  await call('setMyCommands', {
-    commands: PRIVATE_COMMANDS,
-    scope: { type: 'all_private_chats' },
-  });
+  await call('setMyCommands', { commands: PRIVATE_COMMANDS, scope: { type: 'all_private_chats' } });
   console.log('✓ Private-chat commands set:', PRIVATE_COMMANDS.map((c) => `/${c.command}`).join(', '));
 
-  await call('setMyCommands', {
-    commands: GROUP_COMMANDS,
-    scope: { type: 'all_group_chats' },
-  });
+  await call('setMyCommands', { commands: GROUP_COMMANDS, scope: { type: 'all_group_chats' } });
   console.log('✓ Group-chat commands set:', GROUP_COMMANDS.map((c) => `/${c.command}`).join(', '));
 
   await call('setMyShortDescription', { short_description: BOT_SHORT_DESCRIPTION });

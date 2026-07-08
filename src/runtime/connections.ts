@@ -1,3 +1,6 @@
+import axios from 'axios';
+
+import { env } from '../core/env';
 import {
   deactivateConnectionBySourceChannel,
   findConnectionByInn,
@@ -5,13 +8,12 @@ import {
   listConnections,
   upsertSlackConnection,
   upsertTelegramConnection,
-} from './persistenceService.js';
-import { SlackApiService } from './SlackApiService.js';
-import { SlackUser } from '../models/slackUser.js';
-import { IntegrationDistributionService } from './integrationDistributionService.js';
-import axios from 'axios';
-import { env } from '../config/env.js';
+} from './persistence';
+import { SlackApiService } from './slack-api';
+import { SlackUser } from './models';
+import { IntegrationDistributionService } from './distribution';
 
+// Faithful port of services/connectionService.js
 const connectPattern = /^(?:\/(?:connect|activate)|connect|activate)\s+(\d{9,14})(?:\s+([A-Z][A-Z0-9]+-\d+))?$/i;
 const innPattern = /^\d{9,14}$/;
 const TEST_EMAIL_PREFIXES = ['begzod0426_test'];
@@ -19,7 +21,7 @@ const GROUP_CHAT_TYPES = ['group', 'supergroup'];
 const CONNECT_ROLES = ['manager', 'owner', 'teamlead', 'cx_manager'];
 const jiraKeyPattern = /^[A-Z][A-Z0-9]+-\d+$/;
 
-async function resolveActiveManager(userId) {
+async function resolveActiveManager(userId: any) {
   const manager = await SlackUser.findOne({ telegramId: String(userId) });
   if (!manager || manager.status !== 'active' || !CONNECT_ROLES.includes(manager.role)) {
     return null;
@@ -27,98 +29,71 @@ async function resolveActiveManager(userId) {
   return manager;
 }
 
-function isTestEmail(email) {
+function isTestEmail(email: any) {
   const lower = String(email ?? '').toLowerCase().trim();
   return TEST_EMAIL_PREFIXES.some((prefix) => lower.startsWith(prefix));
 }
 
-function sanitizeSlackChannelName(name) {
+function sanitizeSlackChannelName(name: any) {
   const cleaned = String(name ?? '')
     .toLowerCase()
     .replace(/[^a-z0-9_-]/g, '-')
     .replace(/-{2,}/g, '-')
     .replace(/^[-_]+|[-_]+$/g, '');
-
-  // Slack: от 1 до 80 символов
   return (cleaned || `pc-${Date.now()}`).slice(0, 80);
 }
 
-async function buildSlackConnectArtifacts({ inn, telegramChatTitle, manager }) {
+async function buildSlackConnectArtifacts({ inn, telegramChatTitle, manager }: any) {
   const channelName = sanitizeSlackChannelName(`${telegramChatTitle || 'telegram-chat'}-${inn}`);
   let channel;
-
   try {
     channel = await SlackApiService.createPrivateChannel(channelName);
-  } catch (error) {
-    if (!String(error.message).includes('name_taken')) {
-      throw error;
-    }
-
+  } catch (error: any) {
+    if (!String(error.message).includes('name_taken')) throw error;
     const fallbackName = sanitizeSlackChannelName(`${channelName}-${Date.now().toString().slice(-4)}`);
     channel = await SlackApiService.createPrivateChannel(fallbackName);
   }
 
   const integrators = await IntegrationDistributionService.pickIntegratorsForConnect(1);
-
   const invitedUserIds = new Set(
-    integrators
-      .map((item) => item.slackId)
-      .filter((id) => id && !String(id).startsWith('TEST_')),
+    integrators.map((item: any) => item.slackId).filter((id: any) => id && !String(id).startsWith('TEST_')),
   );
 
   const managerIsTest = isTestEmail(manager.email) || String(manager.slackId).startsWith('TEST_');
-  if (!managerIsTest && manager.slackId) {
-    invitedUserIds.add(manager.slackId);
-  }
+  if (!managerIsTest && manager.slackId) invitedUserIds.add(manager.slackId);
 
   if (invitedUserIds.size) {
-    await SlackApiService.inviteToChannel(channel.id, [...invitedUserIds]);
+    await SlackApiService.inviteToChannel(channel.id, [...invitedUserIds] as string[]);
   }
 
   return {
     channel,
     managerIsTest,
-    integratorIds: integrators.map((item) => item._id),
-    integratorSlackIds: integrators.map((item) => item.slackId).filter(Boolean),
+    integratorIds: integrators.map((item: any) => item._id),
+    integratorSlackIds: integrators.map((item: any) => item.slackId).filter(Boolean),
     primaryIntegratorName: integrators[0]?.displayName || integrators[0]?.email || 'интегратор Payme',
     primaryIntegratorSlackId: integrators[0]?.slackId || '',
     primaryIntegratorLoad: integrators[0]?.activeConnects ?? 0,
   };
 }
 
-export function normalizeInn(value) {
+export function normalizeInn(value: any): string {
   const normalized = String(value ?? '').replace(/\D/g, '');
   return innPattern.test(normalized) ? normalized : '';
 }
 
-export function parseConnectCommand(text) {
-  const normalizedText = String(text ?? '').trim();
-  const match = normalizedText.match(connectPattern);
-
-  if (!match) {
-    return null;
-  }
-
-  console.log('✅ Connect command parsed:', { inn: match[1], text: normalizedText });
-
-  return {
-    action: 'connect',
-    inn: match[1],
-    jiraTaskKey: (match[2] || '').toUpperCase(),
-  };
-}
-
-export async function createTelegramConnectDraft({ inn, telegramChatId, telegramChatTitle, telegramChatType, userId, userName }) {
-  if (!telegramChatId) {
-    throw new Error('telegramChatId is required for Telegram activation');
-  }
+export async function createTelegramConnectDraft({
+  inn,
+  telegramChatId,
+  telegramChatTitle,
+  telegramChatType,
+  userId,
+  userName,
+}: any): Promise<any> {
+  if (!telegramChatId) throw new Error('telegramChatId is required for Telegram activation');
 
   if (!GROUP_CHAT_TYPES.includes(String(telegramChatType))) {
-    return {
-      status: 'denied',
-      connection: null,
-      message: '❌ Команда /connect доступна только в Telegram группах.',
-    };
+    return { status: 'denied', connection: null, message: '❌ Команда /connect доступна только в Telegram группах.' };
   }
 
   const manager = await resolveActiveManager(userId);
@@ -131,7 +106,6 @@ export async function createTelegramConnectDraft({ inn, telegramChatId, telegram
   }
 
   const existing = await findConnectionByInn(inn);
-
   if (existing?.status === 'linked') {
     return {
       status: 'denied',
@@ -148,16 +122,10 @@ export async function createTelegramConnectDraft({ inn, telegramChatId, telegram
     telegramInitiatorId: userId,
     telegramInitiatorName: userName,
     managers: [manager._id],
-    metadata: {
-      lastTelegramDraftAt: new Date().toISOString(),
-      draftCreatedByTelegram: true,
-    },
+    metadata: { lastTelegramDraftAt: new Date().toISOString(), draftCreatedByTelegram: true },
   });
 
-  await SlackUser.updateOne(
-    { _id: manager._id },
-    { $addToSet: { connects: connection._id } },
-  );
+  await SlackUser.updateOne({ _id: manager._id }, { $addToSet: { connects: connection._id } });
 
   return {
     status: connection.status,
@@ -166,11 +134,17 @@ export async function createTelegramConnectDraft({ inn, telegramChatId, telegram
   };
 }
 
-async function validateJiraTaskActive(issueKey) {
+export function parseConnectCommand(text: any) {
+  const normalizedText = String(text ?? '').trim();
+  const match = normalizedText.match(connectPattern);
+  if (!match) return null;
+  return { action: 'connect', inn: match[1], jiraTaskKey: (match[2] || '').toUpperCase() };
+}
+
+async function validateJiraTaskActive(issueKey: string) {
   if (!env.jiraBaseUrl || !env.jiraEmail || !env.jiraApiToken) {
     throw new Error('Jira integration is not configured');
   }
-
   const url = `${env.jiraBaseUrl.replace(/\/$/, '')}/rest/api/3/issue/${encodeURIComponent(issueKey)}`;
   const response = await axios.get(url, {
     params: { fields: 'status,summary' },
@@ -179,7 +153,6 @@ async function validateJiraTaskActive(issueKey) {
       Accept: 'application/json',
     },
   });
-
   const issue = response.data;
   const statusCategory = issue?.fields?.status?.statusCategory?.key;
   return {
@@ -190,25 +163,16 @@ async function validateJiraTaskActive(issueKey) {
   };
 }
 
-function formatJiraError(error, issueKey) {
+function formatJiraError(error: any, issueKey: string) {
   const status = error?.response?.status;
-  const apiMessage = error?.response?.data?.errorMessages?.[0]
-    || error?.response?.data?.message
-    || error?.message
-    || 'Unknown Jira API error';
-
-  if (status === 401) {
-    return `Jira auth failed (401). Проверьте JIRA_EMAIL/JIRA_API_TOKEN.`;
-  }
-
-  if (status === 403) {
-    return `Нет доступа к Jira issue ${issueKey} (403). Проверьте права проекта.`;
-  }
-
-  if (status === 404) {
-    return `Jira issue ${issueKey} не найден или у пользователя нет права Browse Projects (404).`;
-  }
-
+  const apiMessage =
+    error?.response?.data?.errorMessages?.[0] ||
+    error?.response?.data?.message ||
+    error?.message ||
+    'Unknown Jira API error';
+  if (status === 401) return `Jira auth failed (401). Проверьте JIRA_EMAIL/JIRA_API_TOKEN.`;
+  if (status === 403) return `Нет доступа к Jira issue ${issueKey} (403). Проверьте права проекта.`;
+  if (status === 404) return `Jira issue ${issueKey} не найден или у пользователя нет права Browse Projects (404).`;
   return `Jira API error${status ? ` (${status})` : ''}: ${apiMessage}`;
 }
 
@@ -221,17 +185,8 @@ export async function activateTelegramByInn({
   userId,
   userName,
   requireExisting = false,
-}) {
-  console.log('🔗 Activating Telegram connection:', {
-    inn,
-    chatId: telegramChatId,
-    chatTitle: telegramChatTitle,
-    user: userName,
-  });
-
-  if (!telegramChatId) {
-    throw new Error('telegramChatId is required for Telegram activation');
-  }
+}: any): Promise<any> {
+  if (!telegramChatId) throw new Error('telegramChatId is required for Telegram activation');
 
   if (!jiraTaskKey && !env.jiraBaseUrl) {
     const connection = await upsertTelegramConnection({
@@ -241,12 +196,8 @@ export async function activateTelegramByInn({
       telegramChatType,
       telegramInitiatorId: userId,
       telegramInitiatorName: userName,
-      metadata: {
-        lastTelegramActivationAt: new Date().toISOString(),
-        jiraDisabledAtActivation: true,
-      },
+      metadata: { lastTelegramActivationAt: new Date().toISOString(), jiraDisabledAtActivation: true },
     });
-
     return {
       status: connection.status,
       connection,
@@ -267,11 +218,7 @@ export async function activateTelegramByInn({
   }
 
   if (!GROUP_CHAT_TYPES.includes(String(telegramChatType))) {
-    return {
-      status: 'denied',
-      connection: null,
-      message: '❌ Команда /connect доступна только в Telegram группах.',
-    };
+    return { status: 'denied', connection: null, message: '❌ Команда /connect доступна только в Telegram группах.' };
   }
 
   const manager = await resolveActiveManager(userId);
@@ -294,7 +241,6 @@ export async function activateTelegramByInn({
   }
 
   const usedJiraKeys = Array.isArray(existing?.jiraTaskKeys) ? existing.jiraTaskKeys : [];
-
   if (usedJiraKeys.includes(jiraTaskKey)) {
     return {
       status: 'denied',
@@ -307,11 +253,7 @@ export async function activateTelegramByInn({
   try {
     jiraTask = await validateJiraTaskActive(jiraTaskKey);
   } catch (error) {
-    return {
-      status: 'failed',
-      connection: existing,
-      message: `❌ Ошибка проверки Jira task ${jiraTaskKey}: ${formatJiraError(error, jiraTaskKey)}`,
-    };
+    return { status: 'failed', connection: existing, message: `❌ Ошибка проверки Jira task ${jiraTaskKey}: ${formatJiraError(error, jiraTaskKey)}` };
   }
 
   if (!jiraTask.isActive) {
@@ -332,18 +274,9 @@ export async function activateTelegramByInn({
 
   let slackArtifacts;
   try {
-    slackArtifacts = await buildSlackConnectArtifacts({
-      inn,
-      telegramChatTitle,
-      manager,
-    });
-  } catch (error) {
-    console.error('❌ Failed to create private Slack channel:', error.message);
-    return {
-      status: 'failed',
-      connection: null,
-      message: `❌ Не удалось создать приватный Slack-канал: ${error.message}`,
-    };
+    slackArtifacts = await buildSlackConnectArtifacts({ inn, telegramChatTitle, manager });
+  } catch (error: any) {
+    return { status: 'failed', connection: null, message: `❌ Не удалось создать приватный Slack-канал: ${error.message}` };
   }
 
   const connection = await upsertTelegramConnection({
@@ -372,17 +305,13 @@ export async function activateTelegramByInn({
 
   const connectUserIds = [manager._id, ...slackArtifacts.integratorIds].filter(Boolean);
   if (connectUserIds.length) {
-    await SlackUser.updateMany(
-      { _id: { $in: connectUserIds } },
-      { $addToSet: { connects: connection._id } },
-    );
+    await SlackUser.updateMany({ _id: { $in: connectUserIds } }, { $addToSet: { connects: connection._id } });
   }
 
   if (connection.status === 'linked' && connection.slackChannelId) {
     const integratorMention = slackArtifacts.primaryIntegratorSlackId
       ? `<@${slackArtifacts.primaryIntegratorSlackId}>`
       : slackArtifacts.primaryIntegratorName;
-
     try {
       await SlackApiService.sendMessage(
         connection.slackChannelId,
@@ -391,16 +320,10 @@ export async function activateTelegramByInn({
           `• Jira: ${connection.jiraIssueUrl || jiraTask.issueKey}\n` +
           `• Telegram группа: ${telegramChatTitle || telegramChatId}`,
       );
-    } catch (notifyError) {
+    } catch (notifyError: any) {
       console.warn('Failed to send integrator assignment message to Slack channel:', notifyError.message);
     }
   }
-
-  console.log('✅ Telegram activation complete:', {
-    inn: connection.inn,
-    status: connection.status,
-    linkedAt: connection.linkedAt,
-  });
 
   return {
     status: connection.status,
@@ -419,17 +342,8 @@ export async function activateTelegramByInn({
   };
 }
 
-export async function activateSlackByInn({ inn, slackChannelId, slackChannelName, slackTeamId, userId, userName }) {
-  console.log('🔗 Activating Slack connection:', {
-    inn,
-    channelId: slackChannelId,
-    channelName: slackChannelName,
-    user: userName,
-  });
-
-  if (!slackChannelId) {
-    throw new Error('slackChannelId is required for Slack activation');
-  }
+export async function activateSlackByInn({ inn, slackChannelId, slackChannelName, slackTeamId, userId, userName }: any) {
+  if (!slackChannelId) throw new Error('slackChannelId is required for Slack activation');
 
   const connection = await upsertSlackConnection({
     inn,
@@ -438,15 +352,7 @@ export async function activateSlackByInn({ inn, slackChannelId, slackChannelName
     slackTeamId,
     slackUserId: userId,
     slackUserName: userName,
-    metadata: {
-      lastSlackActivationAt: new Date().toISOString(),
-    },
-  });
-
-  console.log('✅ Slack activation complete:', {
-    inn: connection.inn,
-    status: connection.status,
-    linkedAt: connection.linkedAt,
+    metadata: { lastSlackActivationAt: new Date().toISOString() },
   });
 
   return {
@@ -459,23 +365,16 @@ export async function activateSlackByInn({ inn, slackChannelId, slackChannelName
   };
 }
 
-export async function deactivateChannelConnect({ source, channelId, actorId, actorName }) {
+export async function deactivateChannelConnect({ source, channelId, actorId, actorName }: any) {
   const updated = await deactivateConnectionBySourceChannel(source, channelId, {
-    deactivatedBy: {
-      id: String(actorId ?? ''),
-      name: actorName ?? '',
-    },
+    deactivatedBy: { id: String(actorId ?? ''), name: actorName ?? '' },
     deactivationSource: source,
     jiraClosureRequested: true,
     jiraClosureStatus: 'todo_stub',
   });
 
   if (!updated) {
-    return {
-      status: 'not_found',
-      connection: null,
-      message: '❌ Активная связка для этого канала не найдена.',
-    };
+    return { status: 'not_found', connection: null, message: '❌ Активная связка для этого канала не найдена.' };
   }
 
   return {
@@ -487,15 +386,10 @@ export async function deactivateChannelConnect({ source, channelId, actorId, act
   };
 }
 
-export async function resolveDestinationForMessage(message) {
+export async function resolveDestinationForMessage(message: any) {
   const connection = await findConnectionBySourceChannel(message.source, message.channelId);
 
   if (!connection) {
-    console.log('⚠️  Connection not found for:', {
-      source: message.source,
-      channelId: message.channelId,
-    });
-
     return {
       connection: null,
       status: 'not_found',
@@ -504,11 +398,6 @@ export async function resolveDestinationForMessage(message) {
   }
 
   if (connection.status !== 'linked') {
-    console.log('⏳ Connection pending:', {
-      inn: connection.inn,
-      status: connection.status,
-    });
-
     return {
       connection,
       status: 'pending',
@@ -519,12 +408,6 @@ export async function resolveDestinationForMessage(message) {
     };
   }
 
-  console.log('✅ Connection linked:', {
-    inn: connection.inn,
-    source: message.source,
-    destination: message.source === 'telegram' ? 'slack' : 'telegram',
-  });
-
   return {
     connection,
     status: 'linked',
@@ -533,7 +416,5 @@ export async function resolveDestinationForMessage(message) {
 }
 
 export async function getConnectionOverview() {
-  const connections = await listConnections();
-  console.log(`📊 Total connections: ${connections.length}`);
-  return connections;
+  return listConnections();
 }

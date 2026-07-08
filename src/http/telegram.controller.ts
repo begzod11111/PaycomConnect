@@ -6,14 +6,13 @@ import { processInboundMessage } from '../runtime/bridge';
 import {
   getTelegramBotInfo,
   getTelegramWebhookInfo,
-  sendTelegramReply,
   setTelegramWebhook,
   validateTelegramWebhookSecret,
 } from '../runtime/telegram';
+import { handleTelegramUpdate } from '../runtime/telegram-webhook';
 
-// Faithful port of the core of routes/telegram.js (webhook message bridge + connect).
-// NOTE: The inline-callback wizard, group PTI session, and Telegram-DM onboarding
-// are not yet ported and still run on the Express app until verified.
+// Full port of routes/telegram.js: webhook (onboarding, callback wizard, group
+// connect session, bridge), bot admin, and mock.
 @Controller('telegram')
 export class TelegramController {
   @Get('bot-info')
@@ -38,32 +37,12 @@ export class TelegramController {
       return res.status(403).json({ ok: false, error: 'Invalid secret token' });
     }
 
-    const update = body;
-    const message = update?.message ?? update?.edited_message;
-
-    // Callback queries and DM onboarding are still served by the Express app.
-    if (!message) {
-      return res.status(200).json({ ok: true, ignored: true });
-    }
-
-    // Fast ACK; forward in background (avoids Telegram ret/ry-driven latency).
+    // Fast ACK; process the full update (onboarding, callbacks, connect, bridge)
+    // in the background so Telegram never sees a slow webhook.
     res.status(200).json({ ok: true });
-
-    processInboundMessage('telegram', update)
-      .then(async (bridgeResult: any) => {
-        if (bridgeResult?.onboarding && bridgeResult?.command?.action === 'connect') {
-          try {
-            await sendTelegramReply({
-              chatId: message.chat?.id,
-              text: bridgeResult.activation?.message ?? 'Команда обработана',
-              replyToMessageId: message.message_id,
-            });
-          } catch (replyError) {
-            console.warn('[Telegram Webhook] connect reply failed:', replyError);
-          }
-        }
-      })
-      .catch((error) => console.error('[Telegram Webhook] Background bridge failed:', error));
+    handleTelegramUpdate(body).catch((error) =>
+      console.error('[Telegram Webhook] Background processing failed:', error),
+    );
   }
 
   @Post('mock')

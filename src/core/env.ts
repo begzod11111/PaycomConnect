@@ -1,7 +1,6 @@
 import * as dotenv from 'dotenv';
 
-// Load the repository-root .env (same file the Express app used) plus a local one.
-dotenv.config({ path: '../.env' });
+// Load the repository-root .env.
 dotenv.config();
 
 function toBoolean(value: string | undefined, defaultValue = false): boolean {

@@ -31,9 +31,12 @@ function parseServiceClients(value: string | undefined): Record<string, string> 
 
 const serviceClients = parseServiceClients(process.env.SERVICE_CLIENTS);
 
+const nodeEnv = process.env.NODE_ENV ?? 'development';
+const ngrokAuthtoken = process.env.NGROK_AUTHTOKEN ?? '';
+
 // Faithful port of config/env.js so behavior is identical after the cutover.
 export const env = {
-  nodeEnv: process.env.NODE_ENV ?? 'development',
+  nodeEnv,
   port: Number(process.env.PORT ?? 9010),
   host: process.env.HOST ?? '0.0.0.0',
   mongoUri: process.env.MONGODB_URI ?? '',
@@ -60,6 +63,15 @@ export const env = {
     process.env.SERVICE_AUTH_ENABLED !== undefined && process.env.SERVICE_AUTH_ENABLED !== ''
       ? toBoolean(process.env.SERVICE_AUTH_ENABLED, false)
       : Object.keys(serviceClients).length > 0,
+  // ngrok tunnel. Kept out of production by default (see docs/architecture-recommendation.md):
+  // when NGROK_ENABLED is unset we only open a tunnel outside production and only if a token
+  // is present. Set NGROK_ENABLED=true/false to force the behavior explicitly.
+  ngrokAuthtoken,
+  ngrokDomain: process.env.NGROK_DOMAIN ?? '',
+  ngrokEnabled:
+    process.env.NGROK_ENABLED !== undefined && process.env.NGROK_ENABLED !== ''
+      ? toBoolean(process.env.NGROK_ENABLED, false)
+      : Boolean(ngrokAuthtoken) && nodeEnv !== 'production',
 };
 
 export const integrationFlags = {

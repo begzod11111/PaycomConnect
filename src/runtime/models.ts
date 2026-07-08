@@ -72,18 +72,42 @@ const fileSchema = new mongoose.Schema(
   { type: String, name: String, url: String, size: Number, mimeType: String },
   { _id: false },
 );
+// Who authored the message and whether they are one of our employees.
+const senderSchema = new mongoose.Schema(
+  {
+    type: { type: String, enum: ['employee', 'client', 'bot', 'system'], default: 'client' },
+    isEmployee: { type: Boolean, default: false },
+    userRef: { type: mongoose.Schema.Types.ObjectId, ref: 'SlackUser', default: null },
+    role: { type: String, default: null },
+    status: { type: String, default: null },
+    displayName: { type: String, default: '' },
+  },
+  { _id: false },
+);
 const messageSchema = new mongoose.Schema(
   {
     source: { type: String, required: true, enum: ['telegram', 'slack'] },
     destination: { type: String, required: true, enum: ['telegram', 'slack'] },
+    direction: {
+      type: String,
+      enum: ['telegram_to_slack', 'slack_to_telegram'],
+      default: '',
+    },
     externalId: { type: String, required: true },
     userId: { type: String, required: true },
     userName: { type: String, required: true },
     channelId: { type: String, default: '' },
+    // Author classification: is this our employee or a client on the other side?
+    sender: { type: senderSchema, default: () => ({}) },
     text: { type: String, default: '' },
+    // Content shape of the message: pure text, a file/attachment, both, or empty.
+    format: { type: String, enum: ['text', 'file', 'mixed', 'empty'], default: 'text' },
     files: { type: [fileSchema], default: [] },
     firstInteraction: { type: Boolean, default: false },
     delivery: { type: mongoose.Schema.Types.Mixed, default: null },
+    // Convenience flag mirroring delivery.status — was it actually delivered
+    // (rendered) on the destination side, or not.
+    delivered: { type: Boolean, default: false },
     jira: { type: mongoose.Schema.Types.Mixed, default: null },
     messageTimestamp: { type: Date, required: true },
     metadata: { type: mongoose.Schema.Types.Mixed, default: {} },
@@ -92,8 +116,44 @@ const messageSchema = new mongoose.Schema(
 );
 messageSchema.index({ source: 1, externalId: 1 }, { unique: true });
 messageSchema.index({ createdAt: -1 });
+messageSchema.index({ 'sender.isEmployee': 1 });
+messageSchema.index({ format: 1 });
 
 export const Message = mongoose.models.Message || mongoose.model('Message', messageSchema);
+
+// ── ActionLog ────────────────────────────────────────────────────────────────
+// A dedicated entity for logs of actions across the bridge (message received,
+// forwarded, delivery failed, connection activated, jira triggered, …). Kept
+// separate from Message so operational history is queryable on its own.
+const actionLogSchema = new mongoose.Schema(
+  {
+    action: { type: String, required: true },
+    category: {
+      type: String,
+      enum: ['message', 'connection', 'jira', 'onboarding', 'system'],
+      default: 'system',
+    },
+    level: { type: String, enum: ['info', 'warn', 'error'], default: 'info' },
+    source: { type: String, enum: ['telegram', 'slack', 'system'], default: 'system' },
+    message: { type: String, default: '' },
+    actor: {
+      userId: { type: String, default: '' },
+      userName: { type: String, default: '' },
+      isEmployee: { type: Boolean, default: false },
+      userRef: { type: mongoose.Schema.Types.ObjectId, ref: 'SlackUser', default: null },
+    },
+    connectionInn: { type: String, default: '' },
+    externalId: { type: String, default: '' },
+    context: { type: mongoose.Schema.Types.Mixed, default: {} },
+  },
+  { timestamps: true },
+);
+actionLogSchema.index({ createdAt: -1 });
+actionLogSchema.index({ category: 1, action: 1 });
+actionLogSchema.index({ connectionInn: 1 });
+
+export const ActionLog =
+  mongoose.models.ActionLog || mongoose.model('ActionLog', actionLogSchema);
 
 // ── JiraIssue ────────────────────────────────────────────────────────────────
 const jiraIssueSchema = new mongoose.Schema(
@@ -145,4 +205,4 @@ slackUserSchema.index({ telegramId: 1 }, { sparse: true });
 export const SlackUser =
   mongoose.models.SlackUser || mongoose.model('SlackUser', slackUserSchema);
 
-export const models = { ChannelLink, Contact, Message, JiraIssue, SlackUser };
+export const models = { ChannelLink, Contact, Message, JiraIssue, SlackUser, ActionLog };

@@ -111,6 +111,13 @@ test('slack connect command completes link and normal telegram message is forwar
   assert.equal(tgMessage.body.jira.triggered, true);
   assert.equal(tgMessage.body.jira.status, 'mocked');
 
+  // Rich message metadata: sender classification, content format, delivered flag.
+  assert.equal(tgMessage.body.message.direction, 'telegram_to_slack');
+  assert.equal(tgMessage.body.message.format, 'text');
+  assert.equal(tgMessage.body.message.delivered, true);
+  assert.equal(tgMessage.body.message.sender.type, 'client');
+  assert.equal(tgMessage.body.message.sender.isEmployee, false);
+
   const summary = await request(server).get('/api/analytics/summary');
   assert.equal(summary.status, 200);
   assert.equal(summary.body.totalMessages, 1);
@@ -119,6 +126,65 @@ test('slack connect command completes link and normal telegram message is forwar
   assert.equal(summary.body.forwardedMessages, 1);
   assert.equal(summary.body.totalConnections, 1);
   assert.equal(summary.body.linkedConnections, 1);
+});
+
+test('file message is stored with format=file', async () => {
+  await request(server).post('/api/mock/telegram').send({
+    messageId: 'tg-connect-file',
+    userId: '1001',
+    userName: 'Manager Ali',
+    channelId: '-100555',
+    chatTitle: 'Paycom TG Support',
+    text: '/connect 555666777',
+  });
+
+  await request(server)
+    .post('/api/slack/commands/connect')
+    .type('form')
+    .send({
+      text: '555666777',
+      channel_id: 'C-FILE-1',
+      channel_name: 'inn-555666777',
+      user_id: 'U-file',
+      user_name: 'slack.manager',
+    });
+
+  const fileMessage = await request(server)
+    .post('/api/mock/telegram')
+    .send({
+      messageId: 'tg-file-1',
+      userId: '2002',
+      userName: 'Client User',
+      channelId: '-100555',
+      files: [{ type: 'document', name: 'invoice.pdf', mimeType: 'application/pdf', size: 1024 }],
+    });
+
+  assert.equal(fileMessage.status, 201);
+  assert.equal(fileMessage.body.message.format, 'file');
+  assert.equal(fileMessage.body.message.sender.type, 'client');
+});
+
+test('action logs are recorded and retrievable', async () => {
+  await request(server).post('/api/mock/telegram').send({
+    messageId: 'tg-connect-log',
+    userId: '1001',
+    userName: 'Manager Ali',
+    channelId: '-100444',
+    chatTitle: 'Paycom TG Support',
+    text: '/connect 444555666',
+  });
+
+  const logs = await request(server).get('/api/logs/recent');
+  assert.equal(logs.status, 200);
+  assert.ok(Array.isArray(logs.body));
+  assert.ok(logs.body.length >= 1);
+
+  const actions = logs.body.map((entry) => entry.action);
+  assert.ok(actions.includes('message.received'));
+  assert.ok(actions.includes('connection.activation'));
+
+  const summary = await request(server).get('/api/analytics/summary');
+  assert.ok(summary.body.totalActionLogs >= 1);
 });
 
 test('message is not forwarded before link is completed', async () => {

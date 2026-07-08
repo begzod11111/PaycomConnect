@@ -7,11 +7,34 @@ import {
   parseConnectCommand,
   resolveDestinationForMessage,
 } from './connections';
+import { logAction } from './action-log';
 import { registerInteraction } from './crm';
+import { identifySender } from './directory';
 import { maybeCreateJiraIssue } from './jira';
 import { findMessageByExternalId, saveJiraIssue, saveMessage } from './persistence';
 import { sendToSlack } from './slack';
 import { sendToTelegram } from './telegram';
+
+// Content shape of a normalized message: pure text, a file/attachment, both, or empty.
+function classifyMessageFormat(message: any): 'text' | 'file' | 'mixed' | 'empty' {
+  const hasFiles = Array.isArray(message.files) && message.files.length > 0;
+  const hasText = Boolean(String(message.text ?? '').trim());
+  if (hasFiles && hasText) return 'mixed';
+  if (hasFiles) return 'file';
+  if (hasText) return 'text';
+  return 'empty';
+}
+
+// telegram_to_slack | slack_to_telegram — the crossing direction.
+function resolveDirection(source: string): string {
+  return source === 'telegram' ? 'telegram_to_slack' : 'slack_to_telegram';
+}
+
+// A delivery outcome counts as "delivered" (rendered on the far side) only when
+// it was actually sent or mocked; pending/unlinked/failed do not.
+function isDelivered(delivery: any): boolean {
+  return ['sent', 'mocked'].includes(delivery?.status);
+}
 
 // Faithful port of services/bridgeService.js
 const processedMessageIds = new Map<string, number>();
@@ -140,6 +163,19 @@ export async function processInboundMessage(source: string, payload: any): Promi
     return { duplicate: true, ignored: true, reason: 'in_memory_dedupe' };
   }
 
+  void logAction({
+    action: 'message.received',
+    category: 'message',
+    source: normalized.source,
+    message: `Inbound ${normalized.source} message received`,
+    actor: { userId: String(normalized.userId ?? ''), userName: normalized.userName ?? '' },
+    externalId: String(normalized.externalId ?? ''),
+    context: {
+      channelId: normalized.channelId,
+      format: classifyMessageFormat(normalized),
+    },
+  });
+
   if (source === 'slack') {
     const ignoredSubtypes = new Set([
       'bot_message',
@@ -152,6 +188,14 @@ export async function processInboundMessage(source: string, payload: any): Promi
       'thread_broadcast',
     ]);
     if (ignoredSubtypes.has(normalized.metadata?.subtype)) {
+      void logAction({
+        action: 'message.skipped',
+        category: 'message',
+        source: normalized.source,
+        message: `Ignored Slack subtype: ${normalized.metadata?.subtype}`,
+        externalId: String(normalized.externalId ?? ''),
+        context: { subtype: normalized.metadata?.subtype },
+      });
       return { duplicate: false, ignored: true, reason: `ignored_subtype:${normalized.metadata?.subtype}` };
     }
   }
@@ -184,6 +228,18 @@ export async function processInboundMessage(source: string, payload: any): Promi
             userName: normalized.userName,
           });
 
+    void logAction({
+      action: 'connection.activation',
+      category: 'connection',
+      source: normalized.source,
+      level: activationResult?.status === 'denied' || activationResult?.status === 'failed' ? 'warn' : 'info',
+      message: `Connect command for INN ${connectCommand.inn}: ${activationResult?.status ?? 'unknown'}`,
+      actor: { userId: String(normalized.userId ?? ''), userName: normalized.userName ?? '' },
+      connectionInn: String(connectCommand.inn ?? ''),
+      externalId: String(normalized.externalId ?? ''),
+      context: { command: connectCommand, status: activationResult?.status ?? null },
+    });
+
     return {
       duplicate: false,
       onboarding: true,
@@ -196,6 +252,9 @@ export async function processInboundMessage(source: string, payload: any): Promi
   processedMessageIds.set(dedupeKey, Date.now());
 
   const crmResult = await registerInteraction(normalized);
+  const sender = await identifySender(normalized.source, normalized.userId);
+  const format = classifyMessageFormat(normalized);
+  const direction = resolveDirection(normalized.source);
   const routing: any = await resolveDestinationForMessage(normalized);
   const jiraResult: any = await maybeCreateJiraIssue({ ...normalized, firstInteraction: crmResult.isFirstInteraction });
 
@@ -224,10 +283,16 @@ export async function processInboundMessage(source: string, payload: any): Promi
           reason: routing.reason,
         };
 
+  const delivered = isDelivered(delivery);
+
   const message = await saveMessage({
     ...normalized,
+    direction,
+    sender,
+    format,
     firstInteraction: crmResult.isFirstInteraction,
-    delivery,
+    delivery: { ...delivery, delivered },
+    delivered,
     jira: jiraResult.triggered ? jiraResult : null,
     metadata: {
       ...normalized.metadata,
@@ -235,6 +300,45 @@ export async function processInboundMessage(source: string, payload: any): Promi
       connectionInn: routing.connection?.inn ?? null,
     },
   });
+
+  void logAction({
+    action: delivered ? 'message.forwarded' : 'message.not_forwarded',
+    category: 'message',
+    level: delivery?.status === 'failed' ? 'error' : delivered ? 'info' : 'warn',
+    source: normalized.source,
+    message: delivered
+      ? `Message forwarded ${direction} (${format})`
+      : `Message not forwarded (${delivery?.status ?? 'unknown'})`,
+    actor: {
+      userId: String(normalized.userId ?? ''),
+      userName: normalized.userName ?? '',
+      isEmployee: sender.isEmployee,
+      userRef: sender.userRef ?? undefined,
+    },
+    connectionInn: routing.connection?.inn ?? '',
+    externalId: String(normalized.externalId ?? ''),
+    context: {
+      direction,
+      format,
+      senderType: sender.type,
+      deliveryStatus: delivery?.status ?? null,
+      deliveryMode: delivery?.mode ?? null,
+      reason: (delivery as any)?.reason ?? null,
+    },
+  });
+
+  if (jiraResult.triggered) {
+    void logAction({
+      action: 'jira.triggered',
+      category: 'jira',
+      source: normalized.source,
+      message: `Jira issue ${jiraResult.status}: ${jiraResult.issueKey || jiraResult.summary || ''}`.trim(),
+      actor: { userId: String(normalized.userId ?? ''), userName: normalized.userName ?? '' },
+      connectionInn: routing.connection?.inn ?? '',
+      externalId: String(normalized.externalId ?? ''),
+      context: { status: jiraResult.status, mode: jiraResult.mode, issueKey: jiraResult.issueKey ?? '' },
+    });
+  }
 
   return { duplicate: false, message, contact: crmResult.contact, delivery, jira: jiraResult };
 }

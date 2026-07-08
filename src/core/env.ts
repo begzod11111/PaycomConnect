@@ -63,6 +63,13 @@ export const env = {
     process.env.SERVICE_AUTH_ENABLED !== undefined && process.env.SERVICE_AUTH_ENABLED !== ''
       ? toBoolean(process.env.SERVICE_AUTH_ENABLED, false)
       : Object.keys(serviceClients).length > 0,
+  // Local, non-public inspection dashboard (logs / messages / connections / system).
+  // Enabled by default outside production; set ENABLE_DASHBOARD=true/false to force.
+  // Intended to be reached via a port-forward / SSH tunnel, not exposed publicly.
+  enableDashboard:
+    process.env.ENABLE_DASHBOARD !== undefined && process.env.ENABLE_DASHBOARD !== ''
+      ? toBoolean(process.env.ENABLE_DASHBOARD, false)
+      : nodeEnv !== 'production',
   // ngrok tunnel. Kept out of production by default (see docs/architecture-recommendation.md):
   // when NGROK_ENABLED is unset we only open a tunnel outside production and only if a token
   // is present. Set NGROK_ENABLED=true/false to force the behavior explicitly.

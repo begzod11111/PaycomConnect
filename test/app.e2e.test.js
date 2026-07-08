@@ -187,6 +187,33 @@ test('action logs are recorded and retrievable', async () => {
   assert.ok(summary.body.totalActionLogs >= 1);
 });
 
+test('dashboard overview page and data endpoints are served', async () => {
+  const page = await request(server).get('/api/dashboard');
+  assert.equal(page.status, 200);
+  assert.match(page.headers['content-type'], /text\/html/);
+  assert.match(page.text, /local dashboard/i);
+
+  const overview = await request(server).get('/api/dashboard/data/overview');
+  assert.equal(overview.status, 200);
+  assert.equal(overview.body.service, 'PaycomConnect');
+  assert.ok(overview.body.process);
+  assert.ok(overview.body.analytics);
+
+  const logs = await request(server).get('/api/dashboard/data/logs');
+  assert.equal(logs.status, 200);
+  assert.ok(Array.isArray(logs.body));
+
+  const messages = await request(server).get('/api/dashboard/data/messages');
+  assert.equal(messages.status, 200);
+  assert.ok(Array.isArray(messages.body));
+
+  for (const path of ['/messages', '/logs', '/connections']) {
+    const res = await request(server).get('/api/dashboard' + path);
+    assert.equal(res.status, 200);
+    assert.match(res.headers['content-type'], /text\/html/);
+  }
+});
+
 test('message is not forwarded before link is completed', async () => {
   await request(server).post('/api/mock/telegram').send({
     messageId: 'tg-connect-2',

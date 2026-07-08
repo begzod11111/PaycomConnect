@@ -19,6 +19,24 @@ When disabled, every dashboard route returns `404` (so it looks like it doesn't
 exist at all). The dashboard is **read-only and unauthenticated**, which is why
 it must stay behind a tunnel and off by default in production.
 
+## Keeping it private in production
+
+Two layers protect it on the deployment VM:
+
+1. **App layer** — disabled by default when `NODE_ENV=production`. Turn it on for
+   local viewing with `ENABLE_DASHBOARD=true` in `.env`.
+2. **Proxy layer** — the nginx site config
+   (`deploy/nginx/paycom.monitoring-jira.uz.conf`) **returns 404 for
+   `/api/dashboard`**, so even if it is enabled it can never be reached through
+   the public domain.
+
+Reach it over an SSH tunnel to the loopback-bound container port instead:
+
+```bash
+ssh -L 9010:127.0.0.1:9010 <user>@<vm>
+# then open http://localhost:9010/api/dashboard
+```
+
 ## Pages
 
 All under the global `/api` prefix:

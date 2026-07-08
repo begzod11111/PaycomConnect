@@ -47,7 +47,7 @@ PaycomConnect — сервис на **NestJS + TypeScript** для синхро�
 npm install
 cp .env.example .env
 npm run build      # сборка TypeScript
-npm test           # e2e-тесты (10/10)
+npm test           # e2e-тесты (13/13)
 npm start          # запуск (MONGODB_URI опционально — есть memory-режим)
 ```
 

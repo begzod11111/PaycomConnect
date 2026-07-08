@@ -20,7 +20,6 @@ import { getConnectionOverview } from '../runtime/connections';
 import {
   findConnectionByInn,
   getAnalyticsSummary,
-  getRecentActionLogs,
   getRecentMessages,
 } from '../runtime/persistence';
 import { ChannelLink } from '../runtime/models';
@@ -68,19 +67,6 @@ export class ApiController {
   async recentMessages(@Query('limit') limit?: string) {
     const parsed = Number(limit ?? 20);
     return getRecentMessages(Number.isNaN(parsed) ? 20 : Math.min(parsed, 100));
-  }
-
-  @Get('logs/recent')
-  @UseGuards(ServiceAuthGuard)
-  async recentLogs(
-    @Query('limit') limit?: string,
-    @Query('category') category?: string,
-    @Query('action') action?: string,
-    @Query('inn') inn?: string,
-  ) {
-    const parsed = Number(limit ?? 50);
-    const safeLimit = Number.isNaN(parsed) ? 50 : Math.min(parsed, 200);
-    return getRecentActionLogs(safeLimit, { category, action, connectionInn: inn });
   }
 
   @Get('connections')

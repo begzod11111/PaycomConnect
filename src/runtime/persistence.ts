@@ -1,4 +1,4 @@
-import { ActionLog, ChannelLink, Contact, JiraIssue, Message, models } from './models';
+import { ChannelLink, Contact, JiraIssue, Message, models } from './models';
 import { isMongoConnected } from './database';
 
 // Faithful port of services/persistenceService.js (Mongo + in-memory fallback).
@@ -7,7 +7,6 @@ const memoryStore = {
   messages: [] as any[],
   jiraIssues: [] as any[],
   channelLinks: new Map<string, any>(),
-  actionLogs: [] as any[],
 };
 
 function toPlainObject(document: any) {
@@ -212,25 +211,15 @@ export async function listConnections() {
 
 export async function getAnalyticsSummary() {
   if (isMongoConnected()) {
-    const [
-      links,
-      messages,
-      contacts,
-      jiraIssues,
-      firstInteractions,
-      forwardedMessages,
-      employeeMessages,
-      actionLogs,
-    ] = await Promise.all([
-      ChannelLink.find().lean(),
-      Message.countDocuments(),
-      Contact.countDocuments(),
-      JiraIssue.countDocuments(),
-      Message.countDocuments({ firstInteraction: true }),
-      Message.countDocuments({ 'delivery.status': { $in: ['sent', 'mocked'] } }),
-      Message.countDocuments({ 'sender.isEmployee': true }),
-      ActionLog.countDocuments(),
-    ]);
+    const [links, messages, contacts, jiraIssues, firstInteractions, forwardedMessages] =
+      await Promise.all([
+        ChannelLink.find().lean(),
+        Message.countDocuments(),
+        Contact.countDocuments(),
+        JiraIssue.countDocuments(),
+        Message.countDocuments({ firstInteraction: true }),
+        Message.countDocuments({ 'delivery.status': { $in: ['sent', 'mocked'] } }),
+      ]);
     return {
       totalConnections: links.length,
       linkedConnections: links.filter((i: any) => i.status === 'linked').length,
@@ -240,8 +229,6 @@ export async function getAnalyticsSummary() {
       firstInteractions,
       jiraIssuesTriggered: jiraIssues,
       forwardedMessages,
-      employeeMessages,
-      totalActionLogs: actionLogs,
     };
   }
 
@@ -255,8 +242,6 @@ export async function getAnalyticsSummary() {
     firstInteractions: memoryStore.messages.filter((i) => i.firstInteraction).length,
     jiraIssuesTriggered: memoryStore.jiraIssues.length,
     forwardedMessages: memoryStore.messages.filter((i) => ['sent', 'mocked'].includes(i.delivery?.status)).length,
-    employeeMessages: memoryStore.messages.filter((i) => i.sender?.isEmployee).length,
-    totalActionLogs: memoryStore.actionLogs.length,
   };
 }
 
@@ -265,37 +250,6 @@ export function resetMemoryStore() {
   memoryStore.messages.length = 0;
   memoryStore.jiraIssues.length = 0;
   memoryStore.channelLinks.clear();
-  memoryStore.actionLogs.length = 0;
-}
-
-export async function saveActionLog(record: any) {
-  if (isMongoConnected()) {
-    return toPlainObject(await ActionLog.create(record));
-  }
-  const log = {
-    ...record,
-    _id: record._id ?? `mem-log-${memoryStore.actionLogs.length + 1}`,
-    createdAt: record.createdAt ?? new Date().toISOString(),
-    updatedAt: new Date().toISOString(),
-  };
-  memoryStore.actionLogs.push(log);
-  return log;
-}
-
-export async function getRecentActionLogs(limit = 50, filter: any = {}) {
-  const query: any = {};
-  if (filter.category) query.category = filter.category;
-  if (filter.action) query.action = filter.action;
-  if (filter.connectionInn) query.connectionInn = filter.connectionInn;
-
-  if (isMongoConnected()) {
-    return ActionLog.find(query).sort({ createdAt: -1 }).limit(limit).lean();
-  }
-
-  const matches = memoryStore.actionLogs.filter((log) =>
-    Object.entries(query).every(([key, value]) => log[key] === value),
-  );
-  return matches.slice(-limit).reverse();
 }
 
 export async function findMessageByExternalId(source: string, externalId: string) {

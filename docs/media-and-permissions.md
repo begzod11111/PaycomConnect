@@ -154,6 +154,23 @@ faithful:
   `<@U…>`→a real `tg://user` link when the user is mapped (otherwise `@name`),
   `<#C…|name>`→`#name`, and `<!here>`/`<!channel>`/`<!subteam…>`→readable text.
 
+#### Structured data / code ("special format")
+
+Structured payloads — JSON, config dumps, key/value blocks such as Payme
+merchant field definitions — contain characters (`_`, `*`, `{`, `}`) and
+indentation that ordinary chat markdown reinterprets, so forwarding them as a
+normal message mangles them (e.g. `order_id`/`is_primary` underscores turning
+into italics, collapsed indentation). `looksLikeStructuredData` detects this
+class of content (conservatively: real JSON, or several quoted key/value pairs,
+or multiple indented lines with brackets) and forwards it in a **monospace
+block** instead: a Slack ```` ``` ```` code block Telegram → Slack, and a
+Telegram `<pre>` block Slack → Telegram (explicit Slack code fences are also
+converted to `<pre>`). Inside those blocks nothing is reinterpreted, so the data
+survives verbatim. Ordinary chat messages are left as normal text.
+
+> Note: Slack `section` blocks cap at 3000 characters; very large payloads should
+> later be chunked or uploaded as a file snippet. Tracked as a follow-up.
+
 Pure functions are unit-tested in `test/message-format.test.js`.
 
 ### Reliability & limits (ties into blocking/analysis)

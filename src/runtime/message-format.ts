@@ -33,6 +33,40 @@ function escapeSlackLinkUrl(value: unknown): string {
     .replace(/\|/g, '%7C');
 }
 
+// Heuristic: does this text look like code / structured data (JSON, config,
+// key/value dumps) that must be forwarded verbatim in a monospace block instead
+// of as chat markdown? Structured payloads (like Payme merchant field configs)
+// contain `_`, `*`, `{`, `}` and indentation that chat markdown reinterprets and
+// mangles, so they are wrapped in a code block on the destination instead.
+//
+// Intentionally conservative to avoid turning ordinary chat messages into code
+// blocks: it requires clear structural signals (JSON braces or several quoted
+// key/value pairs, or multiple indented lines with brackets).
+export function looksLikeStructuredData(text: unknown): boolean {
+  const raw = String(text ?? '');
+  if (raw.length < 20) return false;
+
+  const trimmed = raw.trim();
+  const jsonLike = /^[[{]/.test(trimmed) && /[\]}]$/.test(trimmed);
+  if (jsonLike) return true;
+
+  const keyValuePairs = (raw.match(/"[^"\n]+"\s*:/g) || []).length;
+  if (keyValuePairs >= 3) return true;
+
+  const lines = raw.split('\n');
+  const indentedLines = lines.filter((line) => /^\s{2,}\S/.test(line)).length;
+  if (lines.length >= 3 && indentedLines >= 2 && /[{}[\]]/.test(raw)) return true;
+
+  return false;
+}
+
+// Wrap Slack-escaped text in a triple-backtick code block. Inside a Slack code
+// block markdown formatting (`*`, `_`, `~`) is not applied, so snake_case keys,
+// braces and indentation are preserved exactly.
+function toSlackCodeBlock(text: string): string {
+  return `\`\`\`\n${escapeSlackText(text)}\n\`\`\``;
+}
+
 interface MarkerInsert {
   pos: number;
   text: string;
@@ -50,7 +84,13 @@ interface MarkerInsert {
 export function telegramEntitiesToSlackMrkdwn(text: unknown, entities: TelegramTextEntity[] = []): string {
   const raw = String(text ?? '');
   if (!raw) return '';
-  if (!Array.isArray(entities) || entities.length === 0) return escapeSlackText(raw);
+  if (!Array.isArray(entities) || entities.length === 0) {
+    // Structured/code-like payloads go into a code block so Slack does not
+    // reinterpret underscores, asterisks, braces or indentation. Skip when the
+    // text already contains a fence to avoid producing a broken/nested block.
+    if (!raw.includes('```') && looksLikeStructuredData(raw)) return toSlackCodeBlock(raw);
+    return escapeSlackText(raw);
+  }
 
   const inserts: MarkerInsert[] = [];
   entities.forEach((entity, index) => {
@@ -124,6 +164,16 @@ export function escapeTelegramHtml(value: unknown): string {
     .replace(/"/g, '&quot;');
 }
 
+// Escape only the characters Telegram HTML requires in element text content.
+// Unlike escapeTelegramHtml this leaves `"` untouched, which keeps JSON/config
+// inside <pre> blocks readable.
+function escapeTelegramTextContent(value: string): string {
+  return value
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;');
+}
+
 export interface TelegramMentionInfo {
   telegramId?: string;
   displayName?: string;
@@ -133,6 +183,42 @@ export interface TelegramMentionInfo {
 // `&`, `<`, `>` in the token, so re-escaping them would corrupt the URL.
 function escapeHrefAttribute(url: string): string {
   return url.replace(/"/g, '%22');
+}
+
+// Reverse Slack's control-character escaping so the text can be re-escaped for
+// whatever Telegram context (plain HTML vs `<pre>`) it lands in.
+function unescapeSlackEntities(value: string): string {
+  return value
+    .replace(/&lt;/g, '<')
+    .replace(/&gt;/g, '>')
+    .replace(/&amp;/g, '&');
+}
+
+// Flatten a Slack `<...>` token to plain text (no HTML), used inside monospace
+// blocks where links/mentions should read as literal text.
+function renderSlackTokenPlain(inner: string): string {
+  if (inner.startsWith('@')) {
+    const [id, label] = inner.slice(1).split('|');
+    return `@${label || id}`;
+  }
+  if (inner.startsWith('#')) {
+    const [id, label] = inner.slice(1).split('|');
+    return `#${label || id}`;
+  }
+  if (inner.startsWith('!')) {
+    const [command, label] = inner.slice(1).split('|');
+    if (label) return label;
+    if (command === 'here' || command === 'channel' || command === 'everyone') return `@${command}`;
+    return command.split('^')[0];
+  }
+  const [url, label] = inner.split('|');
+  return label || url;
+}
+
+// Replace every Slack `<...>` token with its plain-text form, leaving the rest
+// of the (already Slack-escaped) text intact.
+function slackTokensToPlainText(source: string): string {
+  return source.replace(/<([^<>]+)>/g, (_full, inner) => renderSlackTokenPlain(inner));
 }
 
 // Render a single Slack angle-bracket token (`<...>`) as Telegram HTML.
@@ -188,6 +274,20 @@ function renderSlackToken(inner: string, mentions: Map<string, TelegramMentionIn
 export function slackTextToTelegramHtml(text: unknown, mentions: Map<string, TelegramMentionInfo> = new Map()): string {
   const source = String(text ?? '');
   if (!source) return '';
+
+  // A whole-message Slack code fence (```...```) becomes a Telegram <pre> block,
+  // preserving the content verbatim (no link/mention parsing inside).
+  const fence = source.match(/^```[^\n]*\n?([\s\S]*?)\n?```$/);
+  if (fence) {
+    return `<pre>${escapeTelegramTextContent(unescapeSlackEntities(fence[1]))}</pre>`;
+  }
+
+  // Code / structured data (JSON, config dumps) is rendered as a monospace block
+  // so Telegram does not reflow it and nothing inside is reinterpreted.
+  const plain = slackTokensToPlainText(source);
+  if (looksLikeStructuredData(plain)) {
+    return `<pre>${escapeTelegramTextContent(unescapeSlackEntities(plain))}</pre>`;
+  }
 
   const tokenRe = /<([^<>]+)>/g;
   let result = '';

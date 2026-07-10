@@ -9,7 +9,18 @@ const {
   escapeTelegramHtml,
   slackTextToTelegramHtml,
   extractSlackMentionIds,
+  looksLikeStructuredData,
 } = require('../dist/runtime/message-format');
+
+const JSON_PAYLOAD = [
+  '{',
+  '  "name": "order",',
+  '  "validate": null,',
+  '  "is_primary": false,',
+  '  "full_name": "test",',
+  '  "order_id": 12345',
+  '}',
+].join('\n');
 
 test('escapeSlackText escapes Slack control characters', () => {
   assert.equal(escapeSlackText('a < b & c > d'), 'a &lt; b &amp; c &gt; d');
@@ -103,4 +114,33 @@ test('slack->telegram: channel and special commands are readable', () => {
 test('extractSlackMentionIds returns unique ids', () => {
   assert.deepEqual(extractSlackMentionIds('<@U1> and <@U2|x> and <@U1>'), ['U1', 'U2']);
   assert.deepEqual(extractSlackMentionIds('no mentions'), []);
+});
+
+test('looksLikeStructuredData recognizes JSON/config, ignores chat', () => {
+  assert.equal(looksLikeStructuredData(JSON_PAYLOAD), true);
+  assert.equal(looksLikeStructuredData('привет, как дела? отправь биллинг'), false);
+  assert.equal(looksLikeStructuredData('short'), false);
+});
+
+test('telegram->slack: JSON payload is wrapped in a code block (snake_case safe)', () => {
+  const out = telegramEntitiesToSlackMrkdwn(JSON_PAYLOAD, []);
+  assert.ok(out.startsWith('```\n') && out.endsWith('\n```'), 'should be fenced');
+  // Underscores/braces preserved verbatim inside the fence (no italic distortion).
+  assert.ok(out.includes('"is_primary": false'));
+  assert.ok(out.includes('"order_id": 12345'));
+});
+
+test('telegram->slack: ordinary text is not turned into a code block', () => {
+  assert.equal(telegramEntitiesToSlackMrkdwn('just a normal message here', []), 'just a normal message here');
+});
+
+test('slack->telegram: JSON payload becomes a <pre> block', () => {
+  const out = slackTextToTelegramHtml(JSON_PAYLOAD);
+  assert.ok(out.startsWith('<pre>') && out.endsWith('</pre>'));
+  assert.ok(out.includes('"order_id": 12345'));
+});
+
+test('slack->telegram: explicit code fence becomes <pre> and unescapes entities', () => {
+  const out = slackTextToTelegramHtml('```\na &lt; b &amp; c\n```');
+  assert.equal(out, '<pre>a &lt; b &amp; c</pre>');
 });

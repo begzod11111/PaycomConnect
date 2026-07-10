@@ -12,7 +12,7 @@ import { registerInteraction } from './crm';
 import { identifySender } from './directory';
 import { maybeCreateJiraIssue } from './jira';
 import { findMessageByExternalId, saveJiraIssue, saveMessage } from './persistence';
-import { sendToSlack } from './slack';
+import { resolveSlackDisplayName, sendToSlack } from './slack';
 import { sendToTelegram } from './telegram';
 
 // Content shape of a normalized message: pure text, a file/attachment, both, or empty.
@@ -253,6 +253,13 @@ export async function processInboundMessage(source: string, payload: any): Promi
   }
 
   processedMessageIds.set(dedupeKey, Date.now());
+
+  // Slack message events usually omit the author profile, leaving a synthetic
+  // "user-<id>" name. Resolve the real display name before it is stored and
+  // forwarded so Telegram shows a person, not a raw Slack id.
+  if (normalized.source === 'slack') {
+    normalized.userName = await resolveSlackDisplayName(normalized.userId, normalized.userName);
+  }
 
   const crmResult = await registerInteraction(normalized);
   const sender = await identifySender(normalized.source, normalized.userId);

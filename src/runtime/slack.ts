@@ -1,8 +1,10 @@
 import axios from 'axios';
 
 import { env } from '../core/env';
+import { isMongoConnected } from './database';
 import { escapeSlackText, telegramEntitiesToSlackMrkdwn } from './message-format';
 import { SlackUser } from './models';
+import { SlackApiService } from './slack-api';
 
 // Faithful port of services/slackService.js (outbound Telegram -> Slack delivery).
 const FILE_RETRY_ATTEMPTS = 3;
@@ -10,6 +12,63 @@ const FILE_RETRY_DELAY_MS = 700;
 const FILE_UPLOAD_CONCURRENCY = 2;
 const TELEGRAM_AVATAR_CACHE_TTL_MS = 10 * 60 * 1000;
 const telegramAvatarCache = new Map<string, any>();
+
+const SLACK_NAME_CACHE_TTL_MS = 10 * 60 * 1000;
+const slackNameCache = new Map<string, { name: string; ts: number }>();
+
+// Slack message events rarely embed the author's profile, so the normalizer
+// falls back to a synthetic `user-<id>` placeholder. Detect that placeholder (or
+// an empty name) so we know when a real name still has to be resolved.
+function isPlaceholderSlackName(name: string, userId: string): boolean {
+  const trimmed = String(name ?? '').trim();
+  if (!trimmed) return true;
+  if (userId && trimmed === `user-${userId}`) return true;
+  return /^user-[A-Z0-9]+$/i.test(trimmed);
+}
+
+// Resolve a Slack user's real display name so forwarded messages show a human
+// name instead of the raw Slack id (e.g. "user-U08BYQYML5A"). Tries our own
+// user directory first (no extra API call), then the Slack Web API, and caches
+// successful lookups to keep the message hot path cheap.
+export async function resolveSlackDisplayName(userId: unknown, currentName?: unknown): Promise<string> {
+  const id = String(userId ?? '').trim();
+  const provided = String(currentName ?? '').trim();
+  if (provided && !isPlaceholderSlackName(provided, id)) return provided;
+  if (!id) return provided;
+
+  const cached = slackNameCache.get(id);
+  if (cached && Date.now() - cached.ts < SLACK_NAME_CACHE_TTL_MS) {
+    return cached.name || provided || id;
+  }
+
+  let resolved = '';
+
+  if (isMongoConnected()) {
+    try {
+      const user: any = await SlackUser.findOne({ slackId: id }).select('displayName email').lean();
+      resolved = user?.displayName || user?.email || '';
+    } catch {
+      // ignore directory lookup failures; fall back to the Slack API
+    }
+  }
+
+  if (!resolved && env.slackBotToken) {
+    try {
+      const info: any = await SlackApiService.getUserInfo(id);
+      resolved =
+        info?.profile?.real_name ||
+        info?.profile?.display_name ||
+        info?.real_name ||
+        info?.name ||
+        '';
+    } catch {
+      // ignore Slack API failures; keep the provided/placeholder name
+    }
+  }
+
+  if (resolved) slackNameCache.set(id, { name: resolved, ts: Date.now() });
+  return resolved || provided || id;
+}
 
 function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));

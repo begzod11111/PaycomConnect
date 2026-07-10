@@ -126,6 +126,14 @@ context line), so the correct name is shown even when the app is missing the
 `chat:write.customize` scope and Slack would otherwise fall back to the app's own
 name.
 
+For the **Slack → Telegram** direction, Slack message events usually do not embed
+the author's profile, so normalization only has a synthetic `user-<id>`
+placeholder (this is why forwarded messages used to show e.g.
+`[user-U08BYQYML5A]`). `runtime/bridge.ts` now resolves the real display name via
+`resolveSlackDisplayName` — first from our own `SlackUser` directory (no extra
+API call), then via the Slack Web API (`users.info`) — with a short in-memory
+cache, before the message is stored and forwarded.
+
 ### Text fidelity (no distortion of links / special characters)
 
 Slack and Telegram use different escaping and markup, so forwarding raw text

@@ -120,7 +120,33 @@ Concrete rules so media renders natively, not as generic file dumps:
 
 Author identity is preserved: Telegram sender name + avatar shown on the Slack
 message (via `chat.postMessage` customize), and `<b>[Name]</b>` prefix on the
-Telegram side, so both feel like a real forwarded conversation.
+Telegram side, so both feel like a real forwarded conversation. The sender's
+display name is **also** rendered inside the Slack message body (an identity
+context line), so the correct name is shown even when the app is missing the
+`chat:write.customize` scope and Slack would otherwise fall back to the app's own
+name.
+
+### Text fidelity (no distortion of links / special characters)
+
+Slack and Telegram use different escaping and markup, so forwarding raw text
+between them corrupts URLs, `&`, `<`, `>` and formatting. All conversion goes
+through one module — `runtime/message-format.ts` — so both directions stay
+faithful:
+
+- **Telegram → Slack** (`telegramEntitiesToSlackMrkdwn`): every character is
+  Slack-escaped (`&` → `&amp;`, `<` → `&lt;`, `>` → `&gt;`) and Telegram rich
+  entities are mapped to Slack mrkdwn — `bold`→`*b*`, `italic`→`_i_`,
+  `code`→`` `c` ``, `pre`→fenced block, and `text_link`→`<url|label>` so
+  hyperlinks survive. Telegram message `entities`/`caption_entities` are carried
+  through `runtime/bridge.ts` for this.
+- **Slack → Telegram** (`slackTextToTelegramHtml`): Slack already HTML-escapes
+  `&`, `<`, `>` (valid Telegram HTML), so those segments are passed through
+  instead of being escaped a second time (the old code turned `&amp;` into
+  `&amp;amp;`). Slack control tokens are translated: `<url|label>`→`<a>` links,
+  `<@U…>`→a real `tg://user` link when the user is mapped (otherwise `@name`),
+  `<#C…|name>`→`#name`, and `<!here>`/`<!channel>`/`<!subteam…>`→readable text.
+
+Pure functions are unit-tested in `test/message-format.test.js`.
 
 ### Reliability & limits (ties into blocking/analysis)
 

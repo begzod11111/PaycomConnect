@@ -1,6 +1,12 @@
 import axios from 'axios';
 
 import { env } from '../core/env';
+import {
+  escapeTelegramHtml,
+  extractSlackMentionIds,
+  slackTextToTelegramHtml,
+  TelegramMentionInfo,
+} from './message-format';
 import { SlackUser } from './models';
 
 // Faithful port of services/telegramService.js (with the authorText bug fixed).
@@ -28,53 +34,38 @@ function extractError(error: any) {
   return error.response?.data?.description ?? error.response?.data?.error ?? error.message;
 }
 
-function escapeHtml(value: any) {
-  return String(value ?? '')
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
-    .replace(/"/g, '&quot;');
-}
-
+// Convert Slack message text to Telegram HTML: resolve `<@U..>` mentions to real
+// Telegram user links where possible, and translate links/channels/commands.
 async function renderSlackMentionsToTelegramHtml(text: any) {
   const source = String(text || '');
-  const mentionMatches = [...source.matchAll(/<@([A-Z0-9]+)(?:\|[^>]+)?>/g)];
-  if (!mentionMatches.length) return escapeHtml(source);
+  const slackIds = extractSlackMentionIds(source);
+  const mentions = new Map<string, TelegramMentionInfo>();
 
-  const slackIds = [...new Set(mentionMatches.map((match) => match[1]))];
-  const mappedUsers = await SlackUser.find({
-    slackId: { $in: slackIds },
-    telegramId: { $exists: true, $ne: null },
-  })
-    .select('slackId telegramId displayName email')
-    .lean();
+  if (slackIds.length) {
+    const mappedUsers = await SlackUser.find({
+      slackId: { $in: slackIds },
+      telegramId: { $exists: true, $ne: null },
+    })
+      .select('slackId telegramId displayName email')
+      .lean();
 
-  const mapBySlackId = new Map(
-    mappedUsers.map((item: any) => [
-      item.slackId,
-      { telegramId: String(item.telegramId), displayName: item.displayName || item.email || item.slackId },
-    ]),
-  );
-
-  let rendered = source;
-  for (const slackId of slackIds) {
-    const info: any = mapBySlackId.get(slackId);
-    if (info?.telegramId) {
-      const tgMention = `<a href="tg://user?id=${info.telegramId}">@${escapeHtml(info.displayName)}</a>`;
-      rendered = rendered.replace(new RegExp(`<@${slackId}(?:\\|[^>]+)?>`, 'g'), tgMention);
+    for (const item of mappedUsers as any[]) {
+      mentions.set(item.slackId, {
+        telegramId: String(item.telegramId),
+        displayName: item.displayName || item.email || item.slackId,
+      });
     }
   }
 
-  const parts = rendered.split(/(<a href="tg:\/\/user\?id=\d+">.*?<\/a>)/g);
-  return parts.map((part) => (part.startsWith('<a href="tg://user?id=') ? part : escapeHtml(part))).join('');
+  return slackTextToTelegramHtml(source, mentions);
 }
 
 function formatText(message: any) {
-  const body = message.forwardedText || escapeHtml(message.text || '') || '[Сообщение без текста]';
+  const body = message.forwardedText || escapeTelegramHtml(message.text || '') || '[Сообщение без текста]';
   const normalizedBody = String(body || '').trim();
   const fileSuffix =
     Array.isArray(message.files) && message.files.length
-      ? `\n\nВложения: ${message.files.map((file: any) => escapeHtml(file.name || file.type)).join(', ')}`
+      ? `\n\nВложения: ${message.files.map((file: any) => escapeTelegramHtml(file.name || file.type)).join(', ')}`
       : '';
   return `${normalizedBody}${fileSuffix}`;
 }
@@ -282,7 +273,7 @@ export async function sendToTelegram(message: any) {
 
   try {
     const renderedText = await renderSlackMentionsToTelegramHtml(message.text || '');
-    const authorName = escapeHtml(String(message.userName || ''));
+    const authorName = escapeTelegramHtml(String(message.userName || ''));
     const forwardedText = authorName && renderedText
       ? `<b>[${authorName}]</b> : ${renderedText}`
       : authorName

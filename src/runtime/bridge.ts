@@ -110,6 +110,9 @@ function normalizeTelegramPayload(payload: any) {
     channelId: String(message.chat?.id ?? payload.channelId ?? env.defaultTelegramChatId ?? ''),
     destinationChannelId: payload.destinationChannelId ?? env.defaultSlackChannelId ?? '',
     text: message.text ?? message.caption ?? payload.text ?? '',
+    // Rich-text entities (bold/italic/links/…) so formatting and hyperlinks can
+    // be reproduced on Slack instead of being flattened to lossy plain text.
+    textEntities: message.entities ?? message.caption_entities ?? payload.textEntities ?? [],
     files: normalizeFiles(payload.files ?? [...photoFiles, ...documentFiles, ...videoFiles, ...audioFiles, ...voiceFiles]),
     messageTimestamp: toIsoTimestamp(message.date ?? payload.timestamp ?? Date.now()),
     metadata: {

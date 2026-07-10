@@ -1,6 +1,7 @@
 import axios from 'axios';
 
 import { env } from '../core/env';
+import { escapeSlackText, telegramEntitiesToSlackMrkdwn } from './message-format';
 import { SlackUser } from './models';
 
 // Faithful port of services/slackService.js (outbound Telegram -> Slack delivery).
@@ -43,11 +44,13 @@ function extractError(error: any) {
   return error.response?.data?.error ?? error.message;
 }
 
+// Plain fallback text (Slack notification / clients without Block Kit). Every
+// dynamic part is Slack-escaped so ampersands, angle brackets and URLs survive.
 function formatText(message: any) {
-  const header = `*${message.userName}*`;
-  const body = message.forwardedText || message.text || '[Сообщение без текста]';
+  const header = `*${escapeSlackText(message.userName)}*`;
+  const body = message.forwardedText || escapeSlackText(message.text) || '[Сообщение без текста]';
   const fileSuffix = message.files.length
-    ? `\n\nВложения: ${message.files.map((file: any) => file.name || file.type).join(', ')}`
+    ? `\n\nВложения: ${message.files.map((file: any) => escapeSlackText(file.name || file.type)).join(', ')}`
     : '';
   return `${header}\n${body}${fileSuffix}`;
 }
@@ -93,37 +96,45 @@ function getSlackCustomizeFields() {
 }
 
 async function buildSlackMessagePayload(message: any) {
-  const forwardedText = message.forwardedText || message.text || '';
+  const forwardedText = message.forwardedText || escapeSlackText(message.text) || '';
   const defaultText = formatText(message);
 
   if (message.source !== 'telegram') {
     return { text: defaultText, customizeFields: getSlackCustomizeFields() };
   }
 
-  const tgUsername = message.metadata?.telegramUsername
-    ? `@${String(message.metadata.telegramUsername).replace(/^@+/, '')}`
+  const senderName = message.userName || env.slackBridgeBotName || 'Telegram User';
+  const tgHandle = message.metadata?.telegramUsername
+    ? `@${escapeSlackText(String(message.metadata.telegramUsername).replace(/^@+/, ''))}`
     : '';
   const avatarUrl = await resolveTelegramAvatarUrl(message.userId);
 
-  const customizeFields: any = { username: message.userName || env.slackBridgeBotName || 'Telegram User' };
+  const customizeFields: any = { username: senderName };
   if (avatarUrl) customizeFields.icon_url = avatarUrl;
   else if (env.slackBridgeBotIconEmoji) customizeFields.icon_emoji = env.slackBridgeBotIconEmoji;
 
-  const blocks: any[] = [];
-  if (tgUsername) {
-    blocks.push({ type: 'context', elements: [{ type: 'mrkdwn', text: `${tgUsername}  •  _Telegram_` }] });
-  }
+  // Always render the sender identity inside the message body. `chat:write.customize`
+  // (which overrides the Slack author name/avatar) may be missing, in which case
+  // Slack falls back to the app's own name — so the human name must also live in
+  // the message itself to avoid showing the "wrong name".
+  const identityParts = [`👤 *${escapeSlackText(senderName)}*`];
+  if (tgHandle) identityParts.push(tgHandle);
+  identityParts.push('_Telegram_');
+
+  const blocks: any[] = [
+    { type: 'context', elements: [{ type: 'mrkdwn', text: identityParts.join('  •  ') }] },
+  ];
   if (forwardedText) {
     blocks.push({ type: 'section', text: { type: 'mrkdwn', text: forwardedText } });
   }
   if (Array.isArray(message.files) && message.files.length) {
     blocks.push({
       type: 'context',
-      elements: [{ type: 'mrkdwn', text: `📎 Вложения: ${message.files.map((file: any) => file.name || file.type).join(', ')}` }],
+      elements: [{ type: 'mrkdwn', text: `📎 Вложения: ${message.files.map((file: any) => escapeSlackText(file.name || file.type)).join(', ')}` }],
     });
   }
 
-  return { text: defaultText, blocks: blocks.length ? blocks : undefined, customizeFields };
+  return { text: defaultText, blocks, customizeFields };
 }
 
 async function resolveIntegratorMentions(connection: any) {
@@ -141,13 +152,18 @@ async function resolveIntegratorMentions(connection: any) {
 }
 
 async function buildTelegramToSlackText(message: any) {
+  // Convert Telegram text (+ rich entities) to Slack mrkdwn once, so links,
+  // formatting and special characters are preserved instead of distorted.
+  let forwardedText = telegramEntitiesToSlackMrkdwn(message.text || '', message.textEntities || []);
+
   const botTag = String(env.telegramBotName || '').trim();
-  const original = String(message.text || '');
-  let forwardedText = original;
-  if (botTag && forwardedText.includes(botTag)) {
-    forwardedText = forwardedText.split(botTag).join('').trim();
-    const integratorMentions = await resolveIntegratorMentions(message.connection);
-    if (integratorMentions) forwardedText = `${forwardedText}\n\n${integratorMentions}`.trim();
+  if (botTag) {
+    const escapedTag = escapeSlackText(botTag);
+    if (forwardedText.includes(escapedTag)) {
+      forwardedText = forwardedText.split(escapedTag).join('').trim();
+      const integratorMentions = await resolveIntegratorMentions(message.connection);
+      if (integratorMentions) forwardedText = `${forwardedText}\n\n${integratorMentions}`.trim();
+    }
   }
   return forwardedText;
 }
@@ -206,7 +222,8 @@ export async function sendToSlack(message: any) {
   }
 
   try {
-    const forwardedText = message.source === 'telegram' ? await buildTelegramToSlackText(message) : message.text;
+    const forwardedText =
+      message.source === 'telegram' ? await buildTelegramToSlackText(message) : escapeSlackText(message.text);
     const payload = await buildSlackMessagePayload({ ...message, forwardedText });
     const customizeFields = payload.customizeFields ?? getSlackCustomizeFields();
     const baseBody: any = { channel, text: payload.text, ...(payload.blocks ? { blocks: payload.blocks } : {}) };

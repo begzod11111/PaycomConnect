@@ -17,6 +17,9 @@ import {
 import { handleTelegramCallback, handleUserMessage } from './telegram-callback';
 import { TelegramOnboardingService } from './onboarding-telegram';
 import { SlackUser } from './models';
+import { formatTelegramMembershipNotice, isTelegramServiceMessage } from './membership';
+import { SlackApiService } from './slack-api';
+import { logAction } from './action-log';
 
 // Faithful port of the routes/telegram.js webhook orchestration.
 const CONNECT_ALLOWED_ROLES = ['manager', 'owner', 'teamlead', 'cx_manager'];
@@ -203,6 +206,38 @@ async function sendPrivateCommandResponse({ chatId, replyToMessageId, text, keyb
   return { mode: 'group_hidden' };
 }
 
+// Telegram membership changes (join/leave) are mirrored to Slack as a clean,
+// Slack-only notice. Nothing is sent back to Telegram, so the event is visible
+// only on the Slack side (as requested). Other service messages are dropped by
+// the caller without any Slack output.
+async function announceTelegramMembershipToSlack(message: any): Promise<void> {
+  const chatId = message?.chat?.id;
+  if (!chatId) return;
+
+  const notice = formatTelegramMembershipNotice(message);
+  if (!notice) return;
+
+  const connection: any = await findConnectionBySourceChannel('telegram', String(chatId));
+  if (!connection || connection.status !== 'linked' || !connection.slackChannelId) return;
+
+  if (env.enableLiveForwarding && env.slackBotToken) {
+    try {
+      await SlackApiService.sendMessage(connection.slackChannelId, notice);
+    } catch (error: any) {
+      console.warn('Failed to announce Telegram membership change in Slack:', error.message);
+    }
+  }
+
+  void logAction({
+    action: 'membership.changed',
+    category: 'message',
+    source: 'telegram',
+    message: notice,
+    connectionInn: String(connection.inn ?? ''),
+    context: { direction: 'telegram_to_slack', kind: 'membership', channelId: String(chatId) },
+  });
+}
+
 // Main entry: process a Telegram update (called in background after fast ACK).
 export async function handleTelegramUpdate(update: any): Promise<void> {
   // ── callback_query ──────────────────────────────────────────────────────────
@@ -370,6 +405,14 @@ export async function handleTelegramUpdate(update: any): Promise<void> {
   // ── messages ─────────────────────────────────────────────────────────────────
   const message = update.message || update.edited_message;
   if (!message) return;
+
+  // Service messages (join/leave/title change/pin/…) are never real user
+  // messages. Announce join/leave to Slack only, and drop the rest so they do
+  // not turn into an empty bridged message.
+  if (isTelegramServiceMessage(message)) {
+    await announceTelegramMembershipToSlack(message);
+    return;
+  }
 
   const chatId = message.chat?.id;
   const userId = message.from?.id;

@@ -276,3 +276,36 @@ test('duplicate message is not counted twice after link', async () => {
   assert.equal(first.body.delivery.status, 'mocked');
   assert.equal(first.body.delivery.target, '-100999');
 });
+
+test('empty Telegram message (no text or files) is not forwarded', async () => {
+  const response = await request(server).post('/api/mock/telegram').send({
+    messageId: 'tg-empty-1',
+    userId: '1001',
+    userName: 'Manager Ali',
+    channelId: '-100777',
+    text: '',
+  });
+
+  assert.equal(response.status, 201);
+  assert.equal(response.body.ignored, true);
+  assert.equal(response.body.reason, 'empty_content');
+
+  const summary = await request(server).get('/api/analytics/summary');
+  assert.equal(summary.body.totalMessages, 0);
+});
+
+test('Slack membership event is ignored (not forwarded to Telegram)', async () => {
+  const response = await request(server).post('/api/mock/slack').send({
+    event_id: 'slack-member-1',
+    type: 'member_joined_channel',
+    user: 'U777',
+    channelId: 'C111222333',
+  });
+
+  assert.equal(response.status, 201);
+  assert.equal(response.body.ignored, true);
+  assert.equal(response.body.reason, 'ignored_event:member_joined_channel');
+
+  const summary = await request(server).get('/api/analytics/summary');
+  assert.equal(summary.body.totalMessages, 0);
+});

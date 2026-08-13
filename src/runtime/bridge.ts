@@ -147,6 +147,7 @@ function normalizeSlackPayload(payload: any) {
     metadata: {
       rawType: payload.event ? 'slack_webhook' : 'slack_mock',
       eventId: payload.event_id ?? null,
+      eventType: event.type ?? null,
       subtype: event.subtype ?? null,
       channelName: payload.channel_name ?? payload.channelName ?? '',
     },
@@ -180,39 +181,70 @@ export async function processInboundMessage(source: string, payload: any): Promi
   });
 
   if (source === 'slack') {
+    // Membership/system events (people added to or removed from a Slack channel)
+    // must not cross over to Telegram — they should stay on the Slack side only.
+    const ignoredEventTypes = new Set([
+      'member_joined_channel',
+      'member_left_channel',
+      'channel_created',
+      'channel_archive',
+      'channel_unarchive',
+    ]);
     const ignoredSubtypes = new Set([
       'bot_message',
       'channel_join',
       'channel_leave',
       'channel_topic',
       'channel_purpose',
+      'channel_name',
+      'channel_archive',
+      'channel_unarchive',
       'message_changed',
       'message_deleted',
       'thread_broadcast',
     ]);
-    if (ignoredSubtypes.has(normalized.metadata?.subtype)) {
+    const ignoredReason = ignoredEventTypes.has(normalized.metadata?.eventType)
+      ? `ignored_event:${normalized.metadata?.eventType}`
+      : ignoredSubtypes.has(normalized.metadata?.subtype)
+        ? `ignored_subtype:${normalized.metadata?.subtype}`
+        : '';
+    if (ignoredReason) {
       void logAction({
         action: 'message.skipped',
         category: 'message',
         source: normalized.source,
-        message: `Ignored Slack subtype: ${normalized.metadata?.subtype}`,
+        message: `Ignored Slack membership/system event: ${ignoredReason}`,
         externalId: String(normalized.externalId ?? ''),
-        context: { subtype: normalized.metadata?.subtype },
+        context: { eventType: normalized.metadata?.eventType, subtype: normalized.metadata?.subtype },
       });
-      return { duplicate: false, ignored: true, reason: `ignored_subtype:${normalized.metadata?.subtype}` };
-    }
-
-    // Ensure a human-readable sender name reaches Telegram. Slack does not
-    // reliably include `user_profile` in message callbacks, so when we only have
-    // the user id we resolve the name from the registered-user directory or a
-    // cached `users.info` lookup instead of forwarding the raw id.
-    if (!normalized.userName) {
-      const event = payload.event ?? payload;
-      normalized.userName = (await resolveSlackDisplayName(normalized.userId, event)) || 'Slack user';
+      return { duplicate: false, ignored: true, reason: ignoredReason };
     }
   }
 
   if (!normalized.userId) throw new Error('User identifier is required');
+
+  // Content-less updates (service messages, membership/system events, reactions,
+  // …) must never be forwarded as an empty message on the far side.
+  if (classifyMessageFormat(normalized) === 'empty' && !parseConnectCommand(normalized.text)) {
+    void logAction({
+      action: 'message.skipped',
+      category: 'message',
+      source: normalized.source,
+      message: 'Skipped empty message (no text or files)',
+      externalId: String(normalized.externalId ?? ''),
+      context: { reason: 'empty_content' },
+    });
+    return { duplicate: false, ignored: true, reason: 'empty_content' };
+  }
+
+  // Ensure a human-readable sender name reaches Telegram. Slack does not
+  // reliably include `user_profile` in message callbacks, so when we only have
+  // the user id we resolve the name from the registered-user directory or a
+  // cached `users.info` lookup instead of forwarding the raw id.
+  if (source === 'slack' && !normalized.userName) {
+    const event = payload.event ?? payload;
+    normalized.userName = (await resolveSlackDisplayName(normalized.userId, event)) || 'Slack user';
+  }
 
   const existingMessage = await findMessageByExternalId(normalized.source, normalized.externalId);
   if (existingMessage) {

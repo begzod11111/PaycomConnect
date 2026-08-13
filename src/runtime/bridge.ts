@@ -12,6 +12,7 @@ import { registerInteraction } from './crm';
 import { identifySender } from './directory';
 import { maybeCreateJiraIssue } from './jira';
 import { findMessageByExternalId, saveJiraIssue, saveMessage } from './persistence';
+import { extractSlackNameFromEvent, resolveSlackDisplayName } from './slack-identity';
 import { sendToSlack } from './slack';
 import { sendToTelegram } from './telegram';
 
@@ -133,12 +134,11 @@ function normalizeSlackPayload(payload: any) {
     destination: 'telegram',
     externalId: String(event.client_msg_id ?? payload.event_id ?? event.event_ts ?? randomUUID()),
     userId: String(event.user ?? payload.userId ?? 'slack-user-unknown'),
-    userName:
-      payload.userName ??
-      event.user_profile?.real_name ??
-      event.user_profile?.display_name ??
-      event.username ??
-      `user-${event.user ?? payload.userId ?? 'unknown'}`,
+    // Prefer an explicit name (mock/tests) or one Slack already put in the
+    // callback payload. When neither is present we leave this empty so the
+    // bridge can resolve it (directory / users.info) before delivery instead of
+    // leaking the raw Slack user id into Telegram.
+    userName: String(payload.userName ?? extractSlackNameFromEvent(event) ?? '').trim(),
     channelId: String(event.channel ?? payload.channelId ?? env.defaultSlackChannelId ?? ''),
     destinationChannelId: payload.destinationChannelId ?? env.defaultTelegramChatId ?? '',
     text: event.text ?? payload.text ?? '',
@@ -200,6 +200,15 @@ export async function processInboundMessage(source: string, payload: any): Promi
         context: { subtype: normalized.metadata?.subtype },
       });
       return { duplicate: false, ignored: true, reason: `ignored_subtype:${normalized.metadata?.subtype}` };
+    }
+
+    // Ensure a human-readable sender name reaches Telegram. Slack does not
+    // reliably include `user_profile` in message callbacks, so when we only have
+    // the user id we resolve the name from the registered-user directory or a
+    // cached `users.info` lookup instead of forwarding the raw id.
+    if (!normalized.userName) {
+      const event = payload.event ?? payload;
+      normalized.userName = (await resolveSlackDisplayName(normalized.userId, event)) || 'Slack user';
     }
   }
 

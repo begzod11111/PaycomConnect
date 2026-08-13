@@ -90,6 +90,27 @@ Configure Slack slash commands to these request URLs:
 /skript      -> https://<your-domain>/api/slack/commands/skript
 ```
 
+## Slack sender names in Telegram
+
+When a Slack message is bridged to Telegram it is prefixed with the sender's
+name (`[Name] : text`). Slack message callbacks only include a `user` id and,
+inconsistently, a `user_profile` object (for example, it is often absent for
+messages sent from mobile enterprise clients). To always show a real name
+without paying a Slack API round-trip on every message, the bridge resolves the
+name from the cheapest available source, in order:
+
+1. `user_profile` in the Slack event callback — zero latency, used as-is when
+   present.
+2. The registered-user directory (`SlackUser.displayName` / email) in Mongo,
+   for people who onboarded into the bridge.
+3. A cached `users.info` lookup — only for users we have never seen (for
+   example, clients who never registered). The result is memoized so repeated
+   messages from the same person never re-query Slack.
+
+If nothing resolves, the message falls back to a neutral `Slack user` label
+instead of leaking the raw Slack user id. The `users:read` scope is what enables
+step 3; without it, only steps 1–2 and the fallback apply.
+
 ## Important limitation
 
 Slack bots cannot truly send messages as real Slack users with a bot token.

@@ -10,6 +10,8 @@ const {
   telegramUserDisplayName,
   isTelegramServiceMessage,
   formatTelegramMembershipNotice,
+  telegramMessageAuthorName,
+  isTelegramProxySender,
 } = require('../dist/runtime/membership');
 
 test('telegramUserDisplayName prefers first+last, then username, then id', () => {
@@ -87,4 +89,24 @@ test('formatTelegramMembershipNotice: returns empty for non-membership messages'
   assert.equal(formatTelegramMembershipNotice({ new_chat_title: 'x' }), '');
   assert.equal(formatTelegramMembershipNotice({ text: 'hi' }), '');
   assert.equal(formatTelegramMembershipNotice(null), '');
+});
+
+test('telegramMessageAuthorName uses sender_chat for anonymous/channel posts', () => {
+  assert.equal(
+    telegramMessageAuthorName({
+      from: { id: 1087968824, username: 'GroupAnonymousBot', first_name: 'Group' },
+      sender_chat: { id: -1001, title: 'Payme Support', type: 'supergroup' },
+    }),
+    'Payme Support',
+  );
+  assert.equal(
+    telegramMessageAuthorName({
+      from: { id: 136817688, username: 'Channel_Bot', first_name: 'Channel' },
+      sender_chat: { id: -1002, title: 'News Channel', type: 'channel' },
+    }),
+    'News Channel',
+  );
+  assert.equal(telegramMessageAuthorName({ from: { id: 7, first_name: 'Lyubov' } }), 'Lyubov');
+  assert.equal(isTelegramProxySender({ id: 777000 }), true);
+  assert.equal(isTelegramProxySender({ id: 42, first_name: 'Human' }), false);
 });

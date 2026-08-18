@@ -7,6 +7,14 @@ import { escapeSlackText } from './message-format';
 // join/leave are turned into a clean Slack-only notice, everything else is
 // silently dropped.
 
+// Telegram uses these bot identities when a human posts anonymously or a
+// channel writes into a group. The real name lives on `sender_chat`.
+const TELEGRAM_PROXY_SENDER_IDS = new Set([
+  '1087968824', // GroupAnonymousBot
+  '136817688', // Channel_Bot
+  '777000', // Telegram (linked-channel auto-forwards)
+]);
+
 // Human-friendly name for a Telegram user object.
 export function telegramUserDisplayName(user: any): string {
   if (!user) return '';
@@ -14,6 +22,29 @@ export function telegramUserDisplayName(user: any): string {
   if (full) return full;
   if (user.username) return `@${String(user.username).replace(/^@+/, '')}`;
   return user.id ? `id${user.id}` : '';
+}
+
+export function isTelegramProxySender(user: any): boolean {
+  if (!user) return true;
+  if (TELEGRAM_PROXY_SENDER_IDS.has(String(user.id))) return true;
+  const username = String(user.username || '');
+  return username === 'GroupAnonymousBot' || username === 'Channel_Bot';
+}
+
+// Display name for a Telegram message, including anonymous-admin / channel posts.
+export function telegramMessageAuthorName(message: any, fallback = 'Telegram user'): string {
+  if (!message) return fallback;
+  const from = message.from;
+  const senderChat = message.sender_chat;
+  if (senderChat && isTelegramProxySender(from)) {
+    if (senderChat.title) return String(senderChat.title);
+    if (senderChat.username) return `@${String(senderChat.username).replace(/^@+/, '')}`;
+  }
+  const fromName = telegramUserDisplayName(from);
+  if (fromName) return fromName;
+  if (senderChat?.title) return String(senderChat.title);
+  if (message.chat?.type === 'channel' && message.chat?.title) return String(message.chat.title);
+  return fallback;
 }
 
 // True for any Telegram update that is a service/system message rather than a

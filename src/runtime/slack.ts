@@ -44,6 +44,14 @@ function extractError(error: any) {
   return error.response?.data?.error ?? error.message;
 }
 
+function sanitizeSlackUsername(name: any): string {
+  return String(name || '')
+    .replace(/[\r\n\t]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 80);
+}
+
 // Plain fallback text (Slack notification / clients without Block Kit). Every
 // dynamic part is Slack-escaped so ampersands, angle brackets and URLs survive.
 function formatText(message: any) {
@@ -90,7 +98,7 @@ async function resolveTelegramAvatarUrl(telegramUserId: any) {
 
 function getSlackCustomizeFields() {
   const fields: any = {};
-  if (env.slackBridgeBotName) fields.username = env.slackBridgeBotName;
+  if (env.slackBridgeBotName) fields.username = sanitizeSlackUsername(env.slackBridgeBotName);
   if (env.slackBridgeBotIconEmoji) fields.icon_emoji = env.slackBridgeBotIconEmoji;
   return fields;
 }
@@ -109,7 +117,7 @@ async function buildSlackMessagePayload(message: any) {
     : '';
   const avatarUrl = await resolveTelegramAvatarUrl(message.userId);
 
-  const customizeFields: any = { username: senderName };
+  const customizeFields: any = { username: sanitizeSlackUsername(senderName) };
   if (avatarUrl) customizeFields.icon_url = avatarUrl;
   else if (env.slackBridgeBotIconEmoji) customizeFields.icon_emoji = env.slackBridgeBotIconEmoji;
 
@@ -234,7 +242,11 @@ export async function sendToSlack(message: any) {
       { headers: { Authorization: `Bearer ${env.slackBotToken}` } },
     );
 
-    if (!response.data?.ok && response.data?.error === 'missing_scope' && Object.keys(customizeFields).length) {
+    // username/icon customization can fail for a specific sender (invalid_name,
+    // unreadable Telegram avatar URL, missing_scope, …). Retry as the app
+    // itself so the message is still delivered instead of vanishing.
+    if (!response.data?.ok && Object.keys(customizeFields).length) {
+      console.warn('Slack customize post failed, retrying without username/icon:', response.data?.error);
       response = await axios.post('https://slack.com/api/chat.postMessage', baseBody, {
         headers: { Authorization: `Bearer ${env.slackBotToken}` },
       });

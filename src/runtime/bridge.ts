@@ -12,6 +12,7 @@ import { registerInteraction } from './crm';
 import { identifySender } from './directory';
 import { maybeCreateJiraIssue } from './jira';
 import { findMessageByExternalId, saveJiraIssue, saveMessage } from './persistence';
+import { telegramMessageAuthorName } from './membership';
 import { extractSlackNameFromEvent, resolveSlackDisplayName } from './slack-identity';
 import { sendToSlack } from './slack';
 import { sendToTelegram } from './telegram';
@@ -79,8 +80,7 @@ function normalizeFiles(files: any[] = []) {
   }));
 }
 
-function normalizeTelegramPayload(payload: any) {
-  const message = payload.message ?? payload.edited_message ?? payload;
+function collectTelegramFiles(message: any) {
   const largestPhoto = Array.isArray(message.photo) && message.photo.length ? message.photo[message.photo.length - 1] : null;
   const photoFiles = largestPhoto
     ? [{ type: 'photo', name: 'telegram-photo', file_id: largestPhoto.file_id, file_size: largestPhoto.file_size }]
@@ -97,31 +97,68 @@ function normalizeTelegramPayload(payload: any) {
   const voiceFiles = message.voice
     ? [{ type: 'voice', name: 'telegram-voice.ogg', file_id: message.voice.file_id, file_size: message.voice.file_size || 0 }]
     : [];
+  const stickerFiles = message.sticker
+    ? [{ type: 'sticker', name: message.sticker.emoji ? `sticker-${message.sticker.emoji}` : 'sticker.webp', file_id: message.sticker.file_id, file_size: message.sticker.file_size || 0 }]
+    : [];
+  const animationFiles = message.animation
+    ? [{ type: 'animation', name: message.animation.file_name || 'telegram-animation.gif', file_id: message.animation.file_id, file_size: message.animation.file_size || 0 }]
+    : [];
+  const videoNoteFiles = message.video_note
+    ? [{ type: 'video_note', name: 'telegram-video-note.mp4', file_id: message.video_note.file_id, file_size: message.video_note.file_size || 0 }]
+    : [];
+  return [...photoFiles, ...documentFiles, ...videoFiles, ...audioFiles, ...voiceFiles, ...stickerFiles, ...animationFiles, ...videoNoteFiles];
+}
+
+function telegramPlaceholderText(message: any): string {
+  if (message?.sticker) return `[Sticker${message.sticker.emoji ? ` ${message.sticker.emoji}` : ''}]`;
+  if (message?.animation) return '[GIF]';
+  if (message?.video_note) return '[Video note]';
+  if (message?.venue) return `[Venue] ${message.venue.title || ''}`.trim();
+  if (message?.location) return `[Location] ${message.location.latitude}, ${message.location.longitude}`;
+  if (message?.contact) {
+    const name = [message.contact.first_name, message.contact.last_name].filter(Boolean).join(' ');
+    return `[Contact] ${name} ${message.contact.phone_number || ''}`.trim();
+  }
+  if (message?.poll) return `[Poll] ${message.poll.question || ''}`.trim();
+  if (message?.dice) return `[Dice] ${message.dice.emoji || ''}`.trim();
+  return '';
+}
+
+// Telegram message_id is unique per chat, not globally. Dedupe keys must include
+// the chat id, otherwise a message in group B is dropped as a "duplicate" of
+// group A's message that happened to share the same numeric id.
+export function telegramExternalId(channelId: unknown, messageId: unknown): string {
+  const chat = String(channelId ?? '').trim();
+  const id = String(messageId ?? '').trim();
+  if (chat && id) return `${chat}:${id}`;
+  return id || randomUUID();
+}
+
+function normalizeTelegramPayload(payload: any) {
+  const message = payload.message ?? payload.edited_message ?? payload.channel_post ?? payload.edited_channel_post ?? payload;
+  const channelId = String(message.chat?.id ?? payload.channelId ?? env.defaultTelegramChatId ?? '');
+  const rawMessageId = message.message_id ?? payload.messageId ?? payload.externalId;
 
   return {
     source: 'telegram',
     destination: 'slack',
-    externalId: String(message.message_id ?? payload.messageId ?? randomUUID()),
-    userId: String(message.from?.id ?? payload.userId ?? 'telegram-user-unknown'),
-    userName:
-      payload.userName ||
-      [message.from?.first_name, message.from?.last_name].filter(Boolean).join(' ').trim() ||
-      message.from?.username ||
-      'Telegram user',
-    channelId: String(message.chat?.id ?? payload.channelId ?? env.defaultTelegramChatId ?? ''),
+    externalId: telegramExternalId(channelId, rawMessageId),
+    userId: String(message.from?.id ?? message.sender_chat?.id ?? message.chat?.id ?? payload.userId ?? 'telegram-user-unknown'),
+    userName: payload.userName || telegramMessageAuthorName(message),
+    channelId,
     destinationChannelId: payload.destinationChannelId ?? env.defaultSlackChannelId ?? '',
-    text: message.text ?? message.caption ?? payload.text ?? '',
+    text: message.text ?? message.caption ?? payload.text ?? telegramPlaceholderText(message),
     // Rich-text entities (bold/italic/links/…) so formatting and hyperlinks can
     // be reproduced on Slack instead of being flattened to lossy plain text.
     textEntities: message.entities ?? message.caption_entities ?? payload.textEntities ?? [],
-    files: normalizeFiles(payload.files ?? [...photoFiles, ...documentFiles, ...videoFiles, ...audioFiles, ...voiceFiles]),
+    files: normalizeFiles(payload.files ?? collectTelegramFiles(message)),
     messageTimestamp: toIsoTimestamp(message.date ?? payload.timestamp ?? Date.now()),
     metadata: {
       rawType: payload.update_id ? 'telegram_webhook' : 'telegram_mock',
       updateId: payload.update_id ?? null,
       chatTitle: message.chat?.title ?? payload.chatTitle ?? '',
       chatType: message.chat?.type ?? payload.chatType ?? '',
-      telegramUsername: message.from?.username ?? '',
+      telegramUsername: message.from?.username ?? message.sender_chat?.username ?? '',
     },
     forceJira: Boolean(payload.forceJira),
   };

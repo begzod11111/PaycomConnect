@@ -13,6 +13,11 @@ const request = require('supertest');
 const { NestFactory } = require('@nestjs/core');
 const { AppModule } = require('../dist/app.module');
 const { resetMemoryStore } = require('../dist/runtime/persistence');
+const {
+  handleTelegramUpdate,
+  resetGroupConnectSessions,
+  putGroupConnectSession,
+} = require('../dist/runtime/telegram-webhook');
 
 let app;
 let server;
@@ -30,6 +35,7 @@ test.after(async () => {
 
 test.beforeEach(() => {
   resetMemoryStore();
+  resetGroupConnectSessions();
 });
 
 test('GET /api/health returns service status', async () => {
@@ -308,4 +314,189 @@ test('Slack membership event is ignored (not forwarded to Telegram)', async () =
 
   const summary = await request(server).get('/api/analytics/summary');
   assert.equal(summary.body.totalMessages, 0);
+});
+
+async function linkTelegramSlackPair({ inn, telegramChatId, slackChannelId, slackChannelName }) {
+  await request(server).post('/api/mock/telegram').send({
+    messageId: `tg-connect-${inn}`,
+    userId: '1001',
+    userName: 'Manager Ali',
+    channelId: telegramChatId,
+    chatTitle: 'Paycom TG Support',
+    text: `/connect ${inn}`,
+  });
+  const slackConnect = await request(server)
+    .post('/api/slack/commands/connect')
+    .type('form')
+    .send({
+      text: inn,
+      channel_id: slackChannelId,
+      channel_name: slackChannelName,
+      user_id: 'U-1',
+      user_name: 'slack.manager',
+    });
+  assert.equal(slackConnect.body.connection.status, 'linked');
+}
+
+test('same Telegram message_id in two groups is forwarded twice, not treated as duplicate', async () => {
+  await linkTelegramSlackPair({
+    inn: '101010101',
+    telegramChatId: '-100101',
+    slackChannelId: 'C-101',
+    slackChannelName: 'inn-101',
+  });
+  await linkTelegramSlackPair({
+    inn: '202020202',
+    telegramChatId: '-100202',
+    slackChannelId: 'C-202',
+    slackChannelName: 'inn-202',
+  });
+
+  const first = await request(server).post('/api/mock/telegram').send({
+    messageId: '42',
+    userId: '5001',
+    userName: 'Client A',
+    channelId: '-100101',
+    text: 'hello from group A',
+  });
+  const second = await request(server).post('/api/mock/telegram').send({
+    messageId: '42',
+    userId: '5002',
+    userName: 'Client B',
+    channelId: '-100202',
+    text: 'hello from group B',
+  });
+
+  assert.equal(first.status, 201);
+  assert.equal(second.status, 201);
+  assert.equal(first.body.duplicate, false);
+  assert.equal(second.body.duplicate, false);
+  assert.equal(first.body.delivery.status, 'mocked');
+  assert.equal(second.body.delivery.status, 'mocked');
+  assert.equal(first.body.delivery.target, 'C-101');
+  assert.equal(second.body.delivery.target, 'C-202');
+  assert.equal(first.body.message.externalId, '-100101:42');
+  assert.equal(second.body.message.externalId, '-100202:42');
+});
+
+test('sticker / GIF Telegram messages are forwarded instead of skipped as empty', async () => {
+  await linkTelegramSlackPair({
+    inn: '303030303',
+    telegramChatId: '-100303',
+    slackChannelId: 'C-303',
+    slackChannelName: 'inn-303',
+  });
+
+  const sticker = await request(server).post('/api/mock/telegram').send({
+    update_id: 1,
+    message: {
+      message_id: 7,
+      date: Math.floor(Date.now() / 1000),
+      chat: { id: -100303, type: 'supergroup', title: 'Paycom TG Support' },
+      from: { id: 9001, first_name: 'Client' },
+      sticker: { file_id: 'sticker-file', emoji: '👋', file_size: 12 },
+    },
+  });
+
+  assert.equal(sticker.status, 201);
+  assert.equal(sticker.body.ignored, undefined);
+  assert.equal(sticker.body.delivery.status, 'mocked');
+  assert.equal(sticker.body.delivery.target, 'C-303');
+  assert.match(sticker.body.message.text, /Sticker/);
+  assert.equal(sticker.body.message.format, 'mixed');
+});
+
+test('open connect session does not drop another member\'s message after the pair is linked', async () => {
+  const telegramChatId = '-100404';
+  await linkTelegramSlackPair({
+    inn: '404404404',
+    telegramChatId,
+    slackChannelId: 'C-404',
+    slackChannelName: 'inn-404',
+  });
+
+  putGroupConnectSession(telegramChatId, {
+    managerUserId: '1001',
+    managerName: 'Manager Ali',
+    mode: 'awaiting_activation',
+    inn: '404404404',
+  });
+
+  await handleTelegramUpdate({
+    update_id: 88,
+    message: {
+      message_id: 15,
+      date: Math.floor(Date.now() / 1000),
+      chat: { id: Number(telegramChatId), type: 'supergroup', title: 'Paycom TG Support' },
+      from: { id: 777001, first_name: 'Customer', last_name: 'From Telegram' },
+      text: 'Здравствуйте, нужна интеграция',
+    },
+  });
+
+  const recent = await request(server).get('/api/messages/recent');
+  assert.equal(recent.status, 200);
+  const forwarded = recent.body.find((item) => item.externalId === `${telegramChatId}:15`);
+  assert.ok(forwarded, 'customer Telegram message must be stored');
+  assert.equal(forwarded.delivered, true);
+  assert.equal(forwarded.delivery.status, 'mocked');
+  assert.equal(forwarded.delivery.target, 'C-404');
+  assert.equal(forwarded.userName, 'Customer From Telegram');
+});
+
+test('channel_post updates are bridged to Slack', async () => {
+  await linkTelegramSlackPair({
+    inn: '505505505',
+    telegramChatId: '-100505',
+    slackChannelId: 'C-505',
+    slackChannelName: 'inn-505',
+  });
+
+  await handleTelegramUpdate({
+    update_id: 91,
+    channel_post: {
+      message_id: 3,
+      date: Math.floor(Date.now() / 1000),
+      chat: { id: -100505, type: 'channel', title: 'Billing Channel' },
+      text: 'hello, you have a billing system',
+    },
+  });
+
+  const recent = await request(server).get('/api/messages/recent');
+  const forwarded = recent.body.find((item) => item.externalId === '-100505:3');
+  assert.ok(forwarded, 'channel_post must be stored');
+  assert.equal(forwarded.delivered, true);
+  assert.equal(forwarded.delivery.target, 'C-505');
+  assert.equal(forwarded.text, 'hello, you have a billing system');
+});
+
+test('group to supergroup migration remaps the Telegram chat id so messages keep flowing', async () => {
+  await linkTelegramSlackPair({
+    inn: '606606606',
+    telegramChatId: '-12345',
+    slackChannelId: 'C-606',
+    slackChannelName: 'inn-606',
+  });
+
+  await handleTelegramUpdate({
+    update_id: 92,
+    message: {
+      message_id: 1,
+      date: Math.floor(Date.now() / 1000),
+      chat: { id: -12345, type: 'group' },
+      from: { id: 1, first_name: 'Telegram' },
+      migrate_to_chat_id: -10012345,
+    },
+  });
+
+  const afterMigrate = await request(server).post('/api/mock/telegram').send({
+    messageId: '2',
+    userId: '8001',
+    userName: 'Client After Migrate',
+    channelId: '-10012345',
+    text: 'still here after upgrade',
+  });
+
+  assert.equal(afterMigrate.status, 201);
+  assert.equal(afterMigrate.body.delivery.status, 'mocked');
+  assert.equal(afterMigrate.body.delivery.target, 'C-606');
 });

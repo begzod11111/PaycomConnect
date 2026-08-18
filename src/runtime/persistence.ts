@@ -46,6 +46,44 @@ export async function findConnectionBySourceChannel(source: string, channelId: s
   return null;
 }
 
+export async function remapTelegramChatId(fromChatId: string, toChatId: string) {
+  if (!fromChatId || !toChatId || String(fromChatId) === String(toChatId)) return null;
+  const existing: any = await findConnectionBySourceChannel('telegram', String(fromChatId));
+  if (!existing) return null;
+
+  if (isMongoConnected()) {
+    return ChannelLink.findOneAndUpdate(
+      { _id: existing._id },
+      {
+        $set: {
+          telegramChatId: String(toChatId),
+          lastActivityAt: new Date(),
+          metadata: {
+            ...(existing.metadata ?? {}),
+            migratedFromChatId: String(fromChatId),
+            migratedToChatId: String(toChatId),
+            migratedAt: new Date().toISOString(),
+          },
+        },
+      },
+      { new: true },
+    ).lean();
+  }
+
+  const updated = toMemoryLink({
+    ...existing,
+    telegramChatId: String(toChatId),
+    metadata: {
+      ...(existing.metadata ?? {}),
+      migratedFromChatId: String(fromChatId),
+      migratedToChatId: String(toChatId),
+      migratedAt: new Date().toISOString(),
+    },
+  });
+  memoryStore.channelLinks.set(existing.inn, updated);
+  return updated;
+}
+
 export async function deactivateConnectionBySourceChannel(
   source: string,
   channelId: string,

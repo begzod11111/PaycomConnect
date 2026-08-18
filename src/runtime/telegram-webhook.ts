@@ -6,7 +6,7 @@ import {
   normalizeInn,
 } from './connections';
 import { processInboundMessage } from './bridge';
-import { findConnectionByInn, findConnectionBySourceChannel } from './persistence';
+import { findConnectionByInn, findConnectionBySourceChannel, remapTelegramChatId } from './persistence';
 import {
   answerCallbackQuery,
   deleteTelegramMessage,
@@ -17,7 +17,7 @@ import {
 import { handleTelegramCallback, handleUserMessage } from './telegram-callback';
 import { TelegramOnboardingService } from './onboarding-telegram';
 import { SlackUser } from './models';
-import { formatTelegramMembershipNotice, isTelegramServiceMessage } from './membership';
+import { formatTelegramMembershipNotice, isTelegramServiceMessage, telegramMessageAuthorName } from './membership';
 import { SlackApiService } from './slack-api';
 import { logAction } from './action-log';
 
@@ -34,6 +34,18 @@ const groupConnectSessionCleanupInterval = setInterval(() => {
   }
 }, 60 * 1000);
 groupConnectSessionCleanupInterval.unref?.();
+
+export function resetGroupConnectSessions() {
+  groupConnectSessions.clear();
+}
+
+export function putGroupConnectSession(chatId: string, session: any) {
+  groupConnectSessions.set(String(chatId), { createdAt: Date.now(), ...session });
+}
+
+function extractTelegramMessage(update: any) {
+  return update.message || update.edited_message || update.channel_post || update.edited_channel_post || null;
+}
 
 function isConnectStartCommand(text: any) {
   return /^\/connect(?:@\w+)?$/i.test(String(text ?? '').trim());
@@ -403,8 +415,21 @@ export async function handleTelegramUpdate(update: any): Promise<void> {
   }
 
   // ── messages ─────────────────────────────────────────────────────────────────
-  const message = update.message || update.edited_message;
+  const message = extractTelegramMessage(update);
   if (!message) return;
+
+  const chatId = message.chat?.id;
+
+  // Group → supergroup upgrades change the chat id. Remap the connection so
+  // subsequent messages still find the Slack channel.
+  if (message.migrate_to_chat_id && chatId) {
+    try {
+      await remapTelegramChatId(String(chatId), String(message.migrate_to_chat_id));
+    } catch (error: any) {
+      console.warn('Failed to remap Telegram chat id after migration:', error.message);
+    }
+    return;
+  }
 
   // Service messages (join/leave/title change/pin/…) are never real user
   // messages. Announce join/leave to Slack only, and drop the rest so they do
@@ -414,12 +439,10 @@ export async function handleTelegramUpdate(update: any): Promise<void> {
     return;
   }
 
-  const chatId = message.chat?.id;
-  const userId = message.from?.id;
+  const userId = message.from?.id ?? message.sender_chat?.id ?? message.chat?.id;
   const chatType = message.chat?.type;
-  const userName =
-    [message.from?.first_name, message.from?.last_name].filter(Boolean).join(' ') || message.from?.username || 'User';
-  const messageText = message.text || '';
+  const userName = telegramMessageAuthorName(message);
+  const messageText = message.text || message.caption || '';
 
   // ── private chat: onboarding & profile ──────────────────────────────────────
   if (chatType === 'private') {
@@ -507,9 +530,20 @@ export async function handleTelegramUpdate(update: any): Promise<void> {
     return;
   }
 
-  const connectSession = groupConnectSessions.get(String(chatId));
+  let connectSession = groupConnectSessions.get(String(chatId));
   if (connectSession) {
-    if (String(userId) !== connectSession.managerUserId) return;
+    const existingLink: any = await findConnectionBySourceChannel('telegram', String(chatId));
+    // Slack may finish /connect while this in-memory wizard is still open.
+    // Once the pair is linked the session must not intercept group traffic —
+    // that is how a customer's Telegram message vanished while a later
+    // manager message (or a Slack→Telegram test) still appeared.
+    if (existingLink?.status === 'linked') {
+      groupConnectSessions.delete(String(chatId));
+      connectSession = undefined;
+    }
+  }
+
+  if (connectSession && String(userId) === connectSession.managerUserId) {
 
     if (messageText === '/cancel') {
       groupConnectSessions.delete(String(chatId));

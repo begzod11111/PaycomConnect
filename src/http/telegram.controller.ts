@@ -3,6 +3,7 @@ import type { Request, Response } from 'express';
 
 import { env } from '../core/env';
 import { processInboundMessage } from '../runtime/bridge';
+import { logAction } from '../runtime/action-log';
 import {
   getTelegramBotInfo,
   getTelegramWebhookInfo,
@@ -40,9 +41,27 @@ export class TelegramController {
     // Fast ACK; process the full update (onboarding, callbacks, connect, bridge)
     // in the background so Telegram never sees a slow webhook.
     res.status(200).json({ ok: true });
-    handleTelegramUpdate(body).catch((error) =>
-      console.error('[Telegram Webhook] Background processing failed:', error),
-    );
+    handleTelegramUpdate(body).catch((error) => {
+      console.error('[Telegram Webhook] Background processing failed:', error);
+      const message = body?.message || body?.edited_message || body?.channel_post || body?.edited_channel_post;
+      void logAction({
+        action: 'telegram.webhook.failed',
+        category: 'message',
+        level: 'error',
+        source: 'telegram',
+        message: `Telegram webhook background processing failed: ${error?.message ?? error}`,
+        actor: {
+          userId: String(message?.from?.id ?? ''),
+          userName: [message?.from?.first_name, message?.from?.last_name].filter(Boolean).join(' '),
+        },
+        externalId: String(message?.message_id ?? body?.update_id ?? ''),
+        context: {
+          channelId: String(message?.chat?.id ?? ''),
+          chatTitle: message?.chat?.title ?? '',
+          updateId: body?.update_id ?? null,
+        },
+      });
+    });
   }
 
   @Post('mock')

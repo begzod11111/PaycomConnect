@@ -168,7 +168,7 @@ export async function setTelegramWebhook({ url, secretToken }: any) {
   const response = await axios.post(getTelegramApiUrl('setWebhook'), {
     url,
     secret_token: secretToken,
-    allowed_updates: ['message', 'edited_message', 'channel_post', 'callback_query', 'my_chat_member'],
+    allowed_updates: ['message', 'edited_message', 'channel_post', 'edited_channel_post', 'callback_query', 'my_chat_member'],
     drop_pending_updates: false,
   });
   if (!response.data?.ok) throw new Error(`Failed to set Telegram webhook: ${response.data?.description ?? 'Unknown error'}`);

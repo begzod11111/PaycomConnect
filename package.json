@@ -5,7 +5,8 @@
   "private": true,
   "scripts": {
     "build": "tsc -p tsconfig.json",
-    "start": "node dist/main.js",
+    "start": "NGROK_ENABLED=false node dist/main.js",
+    "start:ngrok": "NGROK_ENABLED=true node dist/main.js",
     "start:dev": "ts-node src/main.ts",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "test": "npm run build && node --test test/*.test.js",

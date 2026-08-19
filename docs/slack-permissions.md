@@ -92,6 +92,20 @@ Configure Slack slash commands to these request URLs:
 /pull        -> https://<your-domain>/api/slack/commands/pull
 ```
 
+`/sync` compares Telegram with Slack in the background and only forwards
+messages that were never delivered. It does not block live bridging.
+
+```text
+/sync           last 50 Telegram messages (default)
+/sync 10        last 10
+/sync 50        last 50
+/sync 100       last 100
+/sync all       whole Telegram chat (warns if the history is long)
+```
+
+`/sync` does **not** pull Jira comments. Jira stays on the existing keyword-triggered issue path.
+
+
 ## Slack sender names in Telegram
 
 When a Slack message is bridged to Telegram it is prefixed with the sender's

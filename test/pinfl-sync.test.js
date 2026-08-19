@@ -9,11 +9,12 @@ const {
   isUzbekistanPinfl,
   PINFL_SLACK_NOTICE,
 } = require('../dist/runtime/pinfl');
-const { jiraCommentToPlainText, jiraDocToText } = require('../dist/runtime/jira');
 const {
   parseSyncCommandText,
   telegramHistorySkipReason,
   parseTelegramNumericId,
+  listIdsToFetch,
+  buildSyncAckText,
 } = require('../dist/runtime/sync');
 
 test('Uzbekistan PINFL example is detected and hyphenated for Slack', () => {
@@ -48,11 +49,51 @@ test('Slack-only PINFL notice is staff copy, not a Telegram instruction', () => 
   assert.doesNotMatch(PINFL_SLACK_NOTICE, /клиент|merchant|напишите/i);
 });
 
-test('parseSyncCommandText reads scope and lookback', () => {
-  assert.deepEqual(parseSyncCommandText(''), { scope: 'all', lookback: 200 });
-  assert.deepEqual(parseSyncCommandText('telegram 50'), { scope: 'telegram', lookback: 50 });
-  assert.deepEqual(parseSyncCommandText('jira'), { scope: 'jira', lookback: 200 });
-  assert.deepEqual(parseSyncCommandText('tg 15'), { scope: 'telegram', lookback: 15 });
+test('parseSyncCommandText defaults to last 50 and supports limits / full chat', () => {
+  assert.deepEqual(parseSyncCommandText(''), { window: 'last', limit: 50 });
+  assert.deepEqual(parseSyncCommandText('telegram 50'), { window: 'last', limit: 50 });
+  assert.deepEqual(parseSyncCommandText('jira'), { window: 'last', limit: 50 });
+  assert.deepEqual(parseSyncCommandText('tg 10'), { window: 'last', limit: 10 });
+  assert.deepEqual(parseSyncCommandText('100'), { window: 'last', limit: 100 });
+  assert.deepEqual(parseSyncCommandText('all'), { window: 'full', limit: 50 });
+  assert.deepEqual(parseSyncCommandText('telegram all'), { window: 'full', limit: 50 });
+});
+
+test('listIdsToFetch compares Telegram ids to already-sent ones instead of rescanning them', () => {
+  const delivered = [];
+  for (let id = 4951; id <= 5000; id += 1) delivered.push(id);
+  const last = listIdsToFetch({
+    knownIds: [5000],
+    deliveredIds: delivered,
+    window: 'last',
+    limit: 50,
+    newerProbe: 8,
+  });
+  assert.equal(last.windowStart, 4951);
+  assert.equal(last.windowEnd, 5008);
+  assert.equal(last.alreadyOk, 50);
+  assert.deepEqual(last.toFetch, [5001, 5002, 5003, 5004, 5005, 5006, 5007, 5008]);
+
+  const hole = listIdsToFetch({
+    knownIds: [26],
+    deliveredIds: [26],
+    window: 'last',
+    limit: 50,
+    newerProbe: 2,
+  });
+  assert.ok(hole.toFetch.includes(25));
+  assert.ok(!hole.toFetch.includes(26));
+  assert.ok(hole.toFetch.includes(27));
+});
+
+test('full-chat sync ack warns that a long chat runs in the background', () => {
+  const ack = buildSyncAckText({ window: 'full', limit: 50 });
+  assert.match(ack, /весь/i);
+  assert.match(ack, /фон/i);
+  const last = buildSyncAckText({ window: 'last', limit: 10 });
+  assert.match(last, /10/);
+  assert.doesNotMatch(last, /Jira/i);
+  assert.doesNotMatch(ack, /Jira/i);
 });
 
 test('telegramHistorySkipReason drops service/slash/bot/empty, keeps ordinary text', () => {
@@ -67,19 +108,4 @@ test('parseTelegramNumericId understands legacy and chat-scoped ids', () => {
   assert.equal(parseTelegramNumericId('26', '-1003990461674'), 26);
   assert.equal(parseTelegramNumericId('-1003990461674:27', '-1003990461674'), 27);
   assert.equal(parseTelegramNumericId('tg-msg-1', '-1001'), null);
-});
-
-test('jira ADF comments flatten to plain text', () => {
-  const text = jiraCommentToPlainText({
-    body: {
-      type: 'doc',
-      content: [
-        { type: 'paragraph', content: [{ type: 'text', text: 'Need PINFL' }] },
-        { type: 'paragraph', content: [{ type: 'text', text: 'please' }] },
-      ],
-    },
-  });
-  assert.match(text, /Need PINFL/);
-  assert.match(text, /please/);
-  assert.equal(jiraDocToText('plain'), 'plain');
 });

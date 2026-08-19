@@ -8,6 +8,7 @@ import {
   resolveDestinationForMessage,
 } from './connections';
 import { logAction } from './action-log';
+import { beginLiveBridge, endLiveBridge } from './live-gate';
 import { registerInteraction } from './crm';
 import { identifySender } from './directory';
 import { maybeCreateJiraIssue } from './jira';
@@ -96,6 +97,7 @@ export async function redeliverStoredMessage(existing: any): Promise<any> {
           ...existing,
           destinationChannelId: routing.destinationChannelId,
           connection: routing.connection,
+          metadata: { ...(existing.metadata ?? {}), backfilled: true },
         })
       : await sendToTelegram({ ...existing, destinationChannelId: routing.destinationChannelId });
   const delivered = isDelivered(delivery);
@@ -237,11 +239,12 @@ function normalizeTelegramPayload(payload: any) {
     files: normalizeFiles(payload.files ?? collectTelegramFiles(message)),
     messageTimestamp: toIsoTimestamp(message.date ?? payload.timestamp ?? Date.now()),
     metadata: {
-      rawType: payload.update_id ? 'telegram_webhook' : 'telegram_mock',
+      rawType: payload.sync ? 'telegram_sync' : payload.update_id ? 'telegram_webhook' : 'telegram_mock',
       updateId: payload.update_id ?? null,
       chatTitle: message.chat?.title ?? payload.chatTitle ?? '',
       chatType: message.chat?.type ?? payload.chatType ?? '',
       telegramUsername: message.from?.username ?? message.sender_chat?.username ?? '',
+      backfilled: Boolean(payload.sync),
     },
     forceJira: Boolean(payload.forceJira),
   };
@@ -302,6 +305,16 @@ export async function recordSkippedInbound(source: string, payload: any, reason:
 }
 
 export async function processInboundMessage(source: string, payload: any): Promise<any> {
+  const isBackgroundSync = Boolean(payload?.sync);
+  if (!isBackgroundSync) beginLiveBridge();
+  try {
+    return await processInboundMessageBody(source, payload);
+  } finally {
+    if (!isBackgroundSync) endLiveBridge();
+  }
+}
+
+async function processInboundMessageBody(source: string, payload: any): Promise<any> {
   const normalized: any = normalizeInboundMessage(source, payload);
 
   const dedupeKey = `${normalized.source}:${normalized.externalId}`;

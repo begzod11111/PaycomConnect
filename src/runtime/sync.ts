@@ -9,17 +9,10 @@ import {
   telegramExternalId,
 } from './bridge';
 import { isMongoConnected } from './database';
-import { jiraCommentToPlainText, listJiraIssueComments } from './jira';
 import { yieldToLiveBridge } from './live-gate';
 import { isTelegramServiceMessage } from './membership';
 import { SlackUser } from './models';
-import {
-  findConnectionBySourceChannel,
-  findMessageByExternalId,
-  findMessagesByChannel,
-  saveMessage,
-} from './persistence';
-import { SlackApiService } from './slack-api';
+import { findConnectionBySourceChannel, findMessageByExternalId, findMessagesByChannel } from './persistence';
 import {
   fetchTelegramMessageById,
   registerSyncBufferChat,
@@ -33,11 +26,9 @@ const FORWARD_GAP_MS = 80;
 const FULL_CHAT_WARN_AFTER = 200;
 const MAX_CONSECUTIVE_MISS_AFTER_KNOWN = 8;
 
-export type SyncScope = 'both' | 'telegram' | 'jira';
 export type SyncWindow = 'last' | 'full';
 
 export type ParsedSyncCommand = {
-  scope: SyncScope;
   window: SyncWindow;
   limit: number;
 };
@@ -67,13 +58,10 @@ export function parseSyncCommandText(text: unknown): ParsedSyncCommand {
     .toLowerCase()
     .split(/\s+/)
     .filter(Boolean);
-  let scope: SyncScope = 'both';
   let window: SyncWindow = 'last';
   let limit = DEFAULT_LIMIT;
   for (const part of parts) {
-    if (part === 'telegram' || part === 'tg') scope = 'telegram';
-    else if (part === 'jira') scope = 'jira';
-    else if (part === 'both') scope = 'both';
+    if (part === 'telegram' || part === 'tg' || part === 'both' || part === 'jira') continue;
     else if (part === 'all' || part === 'full' || part === 'весь' || part === 'chat') window = 'full';
     else if (part === 'last' || part === 'последние' || part === 'последних') window = 'last';
     else if (/^\d+$/.test(part)) {
@@ -81,13 +69,10 @@ export function parseSyncCommandText(text: unknown): ParsedSyncCommand {
       limit = Math.min(MAX_LIMIT, Math.max(1, Number(part)));
     }
   }
-  return { scope, window, limit };
+  return { window, limit };
 }
 
 export function buildSyncAckText(parsed: ParsedSyncCommand): string {
-  if (parsed.scope === 'jira') {
-    return '🔄 Сверяю комментарии Jira со Slack в фоне. Живые сообщения не блокируются.';
-  }
   if (parsed.window === 'full') {
     return (
       '⚠️ Сверяю *весь* чат Telegram со Slack в фоне. Если переписка длинная, это займёт время — задача не остановит живую пересылку.\n' +
@@ -348,92 +333,6 @@ async function syncTelegramHistory(params: {
   };
 }
 
-async function syncJiraComments(params: { connection: any; slackChannelId: string }) {
-  const issueKeys = [
-    ...new Set(
-      [params.connection.jiraIssueKey, ...(params.connection.jiraTaskKeys || [])]
-        .map((key) => String(key || '').trim())
-        .filter(Boolean),
-    ),
-  ];
-  if (!issueKeys.length) {
-    return { posted: 0, skipped: 0, failed: 0, details: ['У связки нет Jira-ключа — комментарии не подтягивались.'] };
-  }
-  if (!env.jiraBaseUrl || !env.jiraEmail || !env.jiraApiToken) {
-    return { posted: 0, skipped: 0, failed: 0, details: ['Jira не настроена (JIRA_BASE_URL / JIRA_EMAIL / JIRA_API_TOKEN).'] };
-  }
-
-  let posted = 0;
-  let skipped = 0;
-  let failed = 0;
-
-  for (const issueKey of issueKeys) {
-    let comments: any[] = [];
-    try {
-      comments = await listJiraIssueComments(issueKey);
-    } catch (error: any) {
-      failed += 1;
-      continue;
-    }
-    for (const comment of comments) {
-      const commentId = String(comment.id ?? '');
-      if (!commentId) continue;
-      const externalId = `jira:${issueKey}:${commentId}`;
-      const existing = await findMessageByExternalId('slack', externalId);
-      if (existing?.delivered) {
-        skipped += 1;
-        continue;
-      }
-      await yieldToLiveBridge(forwardGapMs);
-      const author = comment.author?.displayName || comment.author?.emailAddress || 'Jira';
-      const body = jiraCommentToPlainText(comment) || '[без текста]';
-      const text = `💬 *Jira ${issueKey}* — ${author}\n${body}`;
-      try {
-        if (env.enableLiveForwarding && env.slackBotToken) {
-          await SlackApiService.sendMessage(params.slackChannelId, text, [
-            { type: 'context', elements: [{ type: 'mrkdwn', text: '_Комментарий из Jira. В Telegram не отправлялся._' }] },
-            { type: 'section', text: { type: 'mrkdwn', text } },
-          ]);
-        }
-        await saveMessage({
-          source: 'slack',
-          destination: 'telegram',
-          direction: 'slack_to_telegram',
-          externalId,
-          userId: String(comment.author?.accountId || 'jira'),
-          userName: author,
-          channelId: params.slackChannelId,
-          text: body,
-          format: 'text',
-          files: [],
-          firstInteraction: false,
-          delivery: {
-            status: env.enableLiveForwarding && env.slackBotToken ? 'sent' : 'mocked',
-            mode: 'jira_sync',
-            target: params.slackChannelId,
-            delivered: true,
-            slackOnly: true,
-          },
-          delivered: true,
-          jira: { issueKey, commentId },
-          messageTimestamp: comment.created ? new Date(comment.created) : new Date(),
-          metadata: {
-            skipTelegram: true,
-            jiraIssueKey: issueKey,
-            jiraCommentId: commentId,
-            rawType: 'jira_comment_sync',
-          },
-        });
-        posted += 1;
-      } catch {
-        failed += 1;
-      }
-    }
-  }
-
-  return { posted, skipped, failed, details: [] as string[] };
-}
-
 export async function syncLinkedChannel(params: {
   slackChannelId: string;
   actorId?: string;
@@ -465,48 +364,24 @@ export async function syncLinkedChannel(params: {
     actor: { userId: String(params.actorId ?? ''), userName: params.actorName ?? '' },
     connectionInn: String(connection.inn ?? ''),
     context: {
-      scope: parsed.scope,
       window: parsed.window,
       limit: parsed.limit,
       slackChannelId: params.slackChannelId,
     },
   });
 
-  const telegram =
-    parsed.scope === 'jira'
-      ? {
-          forwarded: 0,
-          retried: 0,
-          skippedConfidential: 0,
-          alreadyDelivered: 0,
-          missing: 0,
-          failed: 0,
-          scanned: 0,
-          compared: 0,
-          details: [] as string[],
-          buffer: { chatId: '', source: 'none' as const },
-        }
-      : await syncTelegramHistory({
-          connection,
-          window: parsed.window,
-          limit: parsed.limit,
-          actorSlackId: params.actorId,
-          actorName: params.actorName,
-        });
-
-  const jira =
-    parsed.scope === 'telegram'
-      ? { posted: 0, skipped: 0, failed: 0, details: [] as string[] }
-      : await syncJiraComments({ connection, slackChannelId: String(params.slackChannelId) });
+  const telegram = await syncTelegramHistory({
+    connection,
+    window: parsed.window,
+    limit: parsed.limit,
+    actorSlackId: params.actorId,
+    actorName: params.actorName,
+  });
 
   const lines = [
-    `🔄 *Подтягивание для ИНН ${connection.inn}*`,
-    parsed.scope !== 'jira'
-      ? `Telegram → Slack: сверено ${telegram.compared || 0}, подтянуто ${telegram.forwarded}, повтор ${telegram.retried}, уже было ${telegram.alreadyDelivered}, служебные ${telegram.skippedConfidential}, нет id ${telegram.missing}, ошибки ${telegram.failed}. Сообщения идут со временем отправки в Telegram.`
-      : '',
-    parsed.scope !== 'telegram' ? `Jira → Slack: новых комментариев ${jira.posted}, уже было ${jira.skipped}, ошибки ${jira.failed}.` : '',
+    `🔄 *Подтягивание Telegram → Slack для ИНН ${connection.inn}*`,
+    `Сверено ${telegram.compared || 0}, подтянуто ${telegram.forwarded}, повтор ${telegram.retried}, уже было ${telegram.alreadyDelivered}, служебные ${telegram.skippedConfidential}, нет id ${telegram.missing}, ошибки ${telegram.failed}. Сообщения идут со временем отправки в Telegram.`,
     ...telegram.details,
-    ...jira.details,
   ].filter(Boolean);
 
   return {
@@ -515,7 +390,6 @@ export async function syncLinkedChannel(params: {
     message: lines.join('\n'),
     connection,
     telegram,
-    jira,
     parsed,
   };
 }

@@ -5,7 +5,7 @@ import {
   getConnectionOverview,
   normalizeInn,
 } from './connections';
-import { processInboundMessage } from './bridge';
+import { processInboundMessage, recordSkippedInbound, telegramExternalId } from './bridge';
 import { findConnectionByInn, findConnectionBySourceChannel, remapTelegramChatId } from './persistence';
 import {
   answerCallbackQuery,
@@ -45,6 +45,41 @@ export function putGroupConnectSession(chatId: string, session: any) {
 
 function extractTelegramMessage(update: any) {
   return update.message || update.edited_message || update.channel_post || update.edited_channel_post || null;
+}
+
+function logTelegramGroupReceipt(update: any, message: any, extra: { action?: string; reason?: string; level?: 'info' | 'warn' | 'error'; text?: string } = {}) {
+  void logAction({
+    action: extra.action || 'telegram.update.received',
+    category: 'message',
+    level: extra.level || 'info',
+    source: 'telegram',
+    message: extra.text || 'Telegram group/channel update received',
+    actor: {
+      userId: String(message?.from?.id ?? message?.sender_chat?.id ?? ''),
+      userName: telegramMessageAuthorName(message),
+    },
+    externalId: telegramExternalId(message?.chat?.id, message?.message_id),
+    context: {
+      channelId: String(message?.chat?.id ?? ''),
+      chatTitle: message?.chat?.title ?? '',
+      chatType: message?.chat?.type ?? '',
+      telegramMessageId: message?.message_id ?? null,
+      updateId: update?.update_id ?? null,
+      reason: extra.reason ?? null,
+      hasText: Boolean(message?.text || message?.caption),
+      hasMedia: Boolean(
+        message?.photo ||
+          message?.document ||
+          message?.video ||
+          message?.sticker ||
+          message?.animation ||
+          message?.voice ||
+          message?.video_note ||
+          message?.audio,
+      ),
+      textPreview: String(message?.text || message?.caption || '').slice(0, 180),
+    },
+  });
 }
 
 function isConnectStartCommand(text: any) {
@@ -487,6 +522,8 @@ export async function handleTelegramUpdate(update: any): Promise<void> {
     return;
   }
 
+  logTelegramGroupReceipt(update, message);
+
   // ── group chat: /connect two-step session ────────────────────────────────────
   if (messageText === `/start${env.telegramBotName}` || messageText === '/start') {
     try {
@@ -559,6 +596,7 @@ export async function handleTelegramUpdate(update: any): Promise<void> {
           text: '⚠️ Неверный ИНН. Введите только ИНН (9-14 цифр).\nПример: 123456789\nДля отмены: /cancel',
           replyToMessageId: message.message_id,
         });
+        await recordSkippedInbound('telegram', update, 'wizard:invalid_inn');
         return;
       }
       const existingByInn = await findConnectionByInn(inn);
@@ -594,12 +632,13 @@ export async function handleTelegramUpdate(update: any): Promise<void> {
 
     const parsedActivation = parseActivationInput(messageText, connectSession.inn);
     if (!parsedActivation) {
-      await sendPrivateCommandResponse({
-        chatId,
-        text: `⚠️ Неверный формат активации.\nОтправьте:\n/activate ${connectSession.inn || '<INN>'} PTI-12345\nили просто PTI-12345`,
-        replyToMessageId: message.message_id,
-      });
-      return;
+        await sendPrivateCommandResponse({
+          chatId,
+          text: `⚠️ Неверный формат активации.\nОтправьте:\n/activate ${connectSession.inn || '<INN>'} PTI-12345\nили просто PTI-12345`,
+          replyToMessageId: message.message_id,
+        });
+        await recordSkippedInbound('telegram', update, 'wizard:invalid_activation');
+        return;
     }
     const activation = await activateTelegramByInn({
       inn: parsedActivation.inn,
@@ -629,15 +668,24 @@ export async function handleTelegramUpdate(update: any): Promise<void> {
 
   // Hide other slash commands in groups
   if (messageText.startsWith('/')) {
+    logTelegramGroupReceipt(update, message, {
+      action: 'telegram.update.skipped',
+      reason: 'slash_command',
+      level: 'info',
+      text: 'Slash command in group was not bridged',
+    });
     try {
       await deleteTelegramMessage({ chatId, messageId: message.message_id });
     } catch (_) {}
     return;
   }
 
-  // Normal group message -> bridge
+  // Normal group message -> bridge. If a leftover wizard state eats the text,
+  // still store a skipped row so the chat history in Mongo is complete.
   const userMessageResult = await handleUserMessage({ userId, userName, chatId, messageText });
   if (userMessageResult.type === 'normal_message') {
     await processInboundMessage('telegram', update);
+    return;
   }
+  await recordSkippedInbound('telegram', update, `wizard:${userMessageResult.type || userMessageResult.error || 'held'}`);
 }

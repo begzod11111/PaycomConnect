@@ -130,7 +130,8 @@ const CLIENT_JS = `
       { label:'Delivered', get:function(r){
           var d = r.delivered === true || (r.delivery && (r.delivery.delivered===true));
           var st = r.delivery ? (r.delivery.status||'') : '';
-          return badge(d?'yes':'no', d?'b-ok':'b-muted')+' <span class="dim mono">'+esc(st)+'</span>';
+          var reason = (r.delivery && r.delivery.reason) || (r.metadata && r.metadata.skipReason) || '';
+          return badge(d?'yes':'no', d?'b-ok':'b-muted')+' <span class="dim mono">'+esc(st)+(reason?' · '+reason:'')+'</span>';
       } },
       { label:'External ID', get:function(r){ return '<span class="mono dim">'+esc(r.externalId)+'</span>'; } }
     ],

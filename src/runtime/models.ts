@@ -116,8 +116,10 @@ const messageSchema = new mongoose.Schema(
 );
 messageSchema.index({ source: 1, externalId: 1 }, { unique: true });
 messageSchema.index({ createdAt: -1 });
+messageSchema.index({ source: 1, channelId: 1, createdAt: -1 });
 messageSchema.index({ 'sender.isEmployee': 1 });
 messageSchema.index({ format: 1 });
+messageSchema.index({ delivered: 1 });
 
 export const Message = mongoose.models.Message || mongoose.model('Message', messageSchema);
 

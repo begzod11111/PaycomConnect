@@ -349,8 +349,22 @@ export async function findMessageByExternalId(source: string, externalId: string
 
 export async function saveMessage(record: any) {
   if (isMongoConnected()) {
-    return toPlainObject(await Message.create(record));
+    try {
+      return toPlainObject(await Message.create(record));
+    } catch (error: any) {
+      // Duplicate key: another worker already stored this inbound id.
+      // Return the existing row instead of crashing the webhook pipeline.
+      if (error?.code === 11000) {
+        const existing = await Message.findOne({ source: record.source, externalId: record.externalId }).lean();
+        if (existing) return existing;
+      }
+      throw error;
+    }
   }
+  const already = memoryStore.messages.find(
+    (m) => m.source === record.source && String(m.externalId) === String(record.externalId),
+  );
+  if (already) return already;
   const message = {
     ...record,
     _id: record._id ?? `mem-msg-${memoryStore.messages.length + 1}`,

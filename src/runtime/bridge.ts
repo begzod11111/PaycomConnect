@@ -32,6 +32,41 @@ function resolveDirection(source: string): string {
   return source === 'telegram' ? 'telegram_to_slack' : 'slack_to_telegram';
 }
 
+function skippedDelivery(reason: string, target = '') {
+  return { status: 'skipped', mode: 'control', target, reason, delivered: false };
+}
+
+async function persistSkippedMessage(normalized: any, reason: string, extra: any = {}) {
+  const format = extra.format ?? classifyMessageFormat(normalized);
+  try {
+    return await saveMessage({
+      ...normalized,
+      direction: extra.direction ?? resolveDirection(normalized.source),
+      sender: extra.sender ?? {
+        type: 'client',
+        isEmployee: false,
+        userRef: null,
+        role: null,
+        status: null,
+        displayName: '',
+      },
+      format,
+      firstInteraction: false,
+      delivery: extra.delivery ?? skippedDelivery(reason, normalized.channelId),
+      delivered: false,
+      jira: null,
+      metadata: {
+        ...normalized.metadata,
+        skipReason: reason,
+        ...(extra.metadata ?? {}),
+      },
+    });
+  } catch (error: any) {
+    console.warn(`Failed to persist skipped ${normalized.source} message (${reason}):`, error?.message ?? error);
+    return null;
+  }
+}
+
 // A delivery outcome counts as "delivered" (rendered on the far side) only when
 // it was actually sent or mocked; pending/unlinked/failed do not.
 function isDelivered(delivery: any): boolean {
@@ -196,11 +231,43 @@ export function normalizeInboundMessage(source: string, payload: any) {
   return source === 'telegram' ? normalizeTelegramPayload(payload) : normalizeSlackPayload(payload);
 }
 
+// Persist + log an inbound payload that the webhook filtered before the bridge
+// (slash command, wizard, etc.) so the chat still has a Mongo row to inspect.
+export async function recordSkippedInbound(source: string, payload: any, reason: string): Promise<any> {
+  const normalized: any = normalizeInboundMessage(source, payload);
+  void logAction({
+    action: 'message.skipped',
+    category: 'message',
+    level: 'warn',
+    source: normalized.source,
+    message: `Inbound ${normalized.source} message skipped before bridge: ${reason}`,
+    actor: { userId: String(normalized.userId ?? ''), userName: normalized.userName ?? '' },
+    externalId: String(normalized.externalId ?? ''),
+    context: { reason, channelId: normalized.channelId, chatTitle: normalized.metadata?.chatTitle ?? '' },
+  });
+  const existing = await findMessageByExternalId(normalized.source, normalized.externalId);
+  if (existing) {
+    return { duplicate: true, ignored: true, reason, message: existing };
+  }
+  const message = await persistSkippedMessage(normalized, reason);
+  return { duplicate: false, ignored: true, reason, message };
+}
+
 export async function processInboundMessage(source: string, payload: any): Promise<any> {
   const normalized: any = normalizeInboundMessage(source, payload);
 
   const dedupeKey = `${normalized.source}:${normalized.externalId}`;
   if (processedMessageIds.has(dedupeKey)) {
+    void logAction({
+      action: 'message.duplicate',
+      category: 'message',
+      level: 'warn',
+      source: normalized.source,
+      message: 'Dropped by in-memory dedupe (already processed this process)',
+      actor: { userId: String(normalized.userId ?? ''), userName: normalized.userName ?? '' },
+      externalId: String(normalized.externalId ?? ''),
+      context: { channelId: normalized.channelId, reason: 'in_memory_dedupe' },
+    });
     return { duplicate: true, ignored: true, reason: 'in_memory_dedupe' };
   }
 
@@ -263,15 +330,18 @@ export async function processInboundMessage(source: string, payload: any): Promi
   // Content-less updates (service messages, membership/system events, reactions,
   // …) must never be forwarded as an empty message on the far side.
   if (classifyMessageFormat(normalized) === 'empty' && !parseConnectCommand(normalized.text)) {
+    const skipped = await persistSkippedMessage(normalized, 'empty_content', { format: 'empty' });
     void logAction({
       action: 'message.skipped',
       category: 'message',
+      level: 'warn',
       source: normalized.source,
-      message: 'Skipped empty message (no text or files)',
+      message: 'Skipped empty message (no text or files) — stored for diagnostics',
+      actor: { userId: String(normalized.userId ?? ''), userName: normalized.userName ?? '' },
       externalId: String(normalized.externalId ?? ''),
-      context: { reason: 'empty_content' },
+      context: { reason: 'empty_content', channelId: normalized.channelId, stored: Boolean(skipped) },
     });
-    return { duplicate: false, ignored: true, reason: 'empty_content' };
+    return { duplicate: false, ignored: true, reason: 'empty_content', message: skipped };
   }
 
   // Ensure a human-readable sender name reaches Telegram. Slack does not
@@ -285,6 +355,24 @@ export async function processInboundMessage(source: string, payload: any): Promi
 
   const existingMessage = await findMessageByExternalId(normalized.source, normalized.externalId);
   if (existingMessage) {
+    const sameChannel = String(existingMessage.channelId ?? '') === String(normalized.channelId ?? '');
+    void logAction({
+      action: 'message.duplicate',
+      category: 'message',
+      level: sameChannel ? 'info' : 'error',
+      source: normalized.source,
+      message: sameChannel
+        ? 'Duplicate inbound id for the same channel (retry / edit)'
+        : `Cross-chat id collision: incoming channel ${normalized.channelId} matched stored channel ${existingMessage.channelId}`,
+      actor: { userId: String(normalized.userId ?? ''), userName: normalized.userName ?? '' },
+      externalId: String(normalized.externalId ?? ''),
+      context: {
+        channelId: normalized.channelId,
+        existingChannelId: existingMessage.channelId ?? '',
+        existingDelivered: existingMessage.delivered ?? false,
+        sameChannel,
+      },
+    });
     return { duplicate: true, message: existingMessage, delivery: existingMessage.delivery, jira: existingMessage.jira };
   }
 

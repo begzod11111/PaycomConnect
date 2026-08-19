@@ -283,7 +283,7 @@ test('duplicate message is not counted twice after link', async () => {
   assert.equal(first.body.delivery.target, '-100999');
 });
 
-test('empty Telegram message (no text or files) is not forwarded', async () => {
+test('empty Telegram message (no text or files) is stored as skipped, not forwarded', async () => {
   const response = await request(server).post('/api/mock/telegram').send({
     messageId: 'tg-empty-1',
     userId: '1001',
@@ -295,9 +295,13 @@ test('empty Telegram message (no text or files) is not forwarded', async () => {
   assert.equal(response.status, 201);
   assert.equal(response.body.ignored, true);
   assert.equal(response.body.reason, 'empty_content');
+  assert.equal(response.body.message.delivered, false);
+  assert.equal(response.body.message.metadata.skipReason, 'empty_content');
+  assert.equal(response.body.message.channelId, '-100777');
 
   const summary = await request(server).get('/api/analytics/summary');
-  assert.equal(summary.body.totalMessages, 0);
+  assert.equal(summary.body.totalMessages, 1);
+  assert.equal(summary.body.forwardedMessages, 0);
 });
 
 test('Slack membership event is ignored (not forwarded to Telegram)', async () => {
@@ -499,4 +503,60 @@ test('group to supergroup migration remaps the Telegram chat id so messages keep
   assert.equal(afterMigrate.status, 201);
   assert.equal(afterMigrate.body.delivery.status, 'mocked');
   assert.equal(afterMigrate.body.delivery.target, 'C-606');
+});
+
+test('telegram webhook receipt is logged for a group message even before forwarding', async () => {
+  await linkTelegramSlackPair({
+    inn: '707707707',
+    telegramChatId: '-1003990461674',
+    slackChannelId: 'C-707',
+    slackChannelName: 'inn-707',
+  });
+
+  await handleTelegramUpdate({
+    update_id: 527274098,
+    message: {
+      message_id: 26,
+      date: Math.floor(Date.now() / 1000),
+      chat: { id: -1003990461674, type: 'supergroup', title: 'BUSHLYAKOVA LYUBOV' },
+      from: { id: 6936391177, first_name: 'Rogneda', last_name: '& Docveris', username: 'Rogneda_DocVeris' },
+      text: 'по сайту и биллингу - сайт работает на wordpress',
+    },
+  });
+
+  const logs = await request(server).get('/api/logs/recent');
+  const receipt = logs.body.find((entry) => entry.action === 'telegram.update.received');
+  assert.ok(receipt, 'telegram.update.received must be stored');
+  assert.equal(receipt.context.channelId, '-1003990461674');
+  assert.equal(receipt.externalId, '-1003990461674:26');
+
+  const messages = await request(server).get('/api/messages/recent');
+  const stored = messages.body.find((item) => item.externalId === '-1003990461674:26');
+  assert.ok(stored);
+  assert.equal(stored.delivered, true);
+  assert.equal(stored.channelId, '-1003990461674');
+});
+
+test('telegram duplicate of the same chat id is logged instead of silently dropped', async () => {
+  await linkTelegramSlackPair({
+    inn: '808808808',
+    telegramChatId: '-100808',
+    slackChannelId: 'C-808',
+    slackChannelName: 'inn-808',
+  });
+
+  const payload = {
+    messageId: '26',
+    userId: '6936391177',
+    userName: 'Rogneda & Docveris',
+    channelId: '-100808',
+    text: 'same telegram message retried',
+  };
+  const first = await request(server).post('/api/mock/telegram').send(payload);
+  const second = await request(server).post('/api/mock/telegram').send(payload);
+  assert.equal(first.status, 201);
+  assert.equal(second.body.duplicate, true);
+
+  const logs = await request(server).get('/api/logs/recent');
+  assert.ok(logs.body.some((entry) => entry.action === 'message.duplicate'));
 });

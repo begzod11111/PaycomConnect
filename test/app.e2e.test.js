@@ -22,7 +22,9 @@ const {
   syncLinkedChannel,
   setTelegramHistoryFetcherForTests,
   setSyncBufferChatForTests,
+  resetSyncQueueForTests,
 } = require('../dist/runtime/sync');
+const { resetLiveBridgeForTests } = require('../dist/runtime/live-gate');
 
 let app;
 let server;
@@ -43,6 +45,8 @@ test.beforeEach(() => {
   resetGroupConnectSessions();
   setTelegramHistoryFetcherForTests(null);
   setSyncBufferChatForTests('');
+  resetSyncQueueForTests();
+  resetLiveBridgeForTests();
 });
 
 test('GET /api/health returns service status', async () => {
@@ -602,7 +606,7 @@ test('slack /sync command acknowledges immediately', async () => {
     });
   assert.equal(ack.status, 200);
   assert.equal(ack.body.response_type, 'ephemeral');
-  assert.match(ack.body.text, /Подтягиваю/i);
+  assert.match(ack.body.text, /Сверяю|фон/i);
 });
 
 test('slack /sync pulls missing telegram history into the linked channel', async () => {
@@ -668,6 +672,10 @@ test('slack /sync pulls missing telegram history into the linked channel', async
   assert.ok(texts.includes('предыдущее сообщение до 26'));
   assert.ok(texts.includes('сообщение после 26'));
   assert.ok(!texts.includes('bot should be skipped'));
+  const pulled = messages.body.find((item) => item.text === 'предыдущее сообщение до 26');
+  assert.ok(pulled);
+  assert.equal(pulled.metadata.backfilled, true);
+  assert.ok(pulled.messageTimestamp);
 });
 
 test('slack /sync redelivers undelivered telegram rows after the pair is linked', async () => {

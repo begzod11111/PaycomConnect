@@ -104,6 +104,24 @@ function getSlackCustomizeFields() {
   return fields;
 }
 
+export function formatTelegramSentAt(value: any): string {
+  if (value === null || value === undefined || value === '') return '';
+  let ms: number;
+  if (value instanceof Date) ms = value.getTime();
+  else if (typeof value === 'number' && Number.isFinite(value)) ms = value < 1e12 ? value * 1000 : value;
+  else ms = new Date(value).getTime();
+  if (!Number.isFinite(ms)) return '';
+  return new Intl.DateTimeFormat('ru-RU', {
+    timeZone: 'Asia/Tashkent',
+    day: '2-digit',
+    month: '2-digit',
+    year: 'numeric',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  }).format(new Date(ms));
+}
+
 async function buildSlackMessagePayload(message: any) {
   const forwardedText = message.forwardedText || escapeSlackText(message.text) || '';
   const defaultText = formatText(message);
@@ -129,6 +147,9 @@ async function buildSlackMessagePayload(message: any) {
   const identityParts = [`👤 *${escapeSlackText(senderName)}*`];
   if (tgHandle) identityParts.push(tgHandle);
   identityParts.push('_Telegram_');
+  const sentAt = formatTelegramSentAt(message.messageTimestamp);
+  if (sentAt) identityParts.push(escapeSlackText(sentAt));
+  if (message.metadata?.backfilled) identityParts.push('_подтянуто_');
 
   const blocks: any[] = [
     { type: 'context', elements: [{ type: 'mrkdwn', text: identityParts.join('  •  ') }] },

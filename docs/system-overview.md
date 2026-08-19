@@ -112,7 +112,7 @@ system. For every inbound message it:
 | `POST /api/mock/telegram`, `POST /api/mock/slack` | Simulate inbound messages (used by tests). |
 | `POST /api/telegram/webhook` | Telegram webhook (optional secret-token check). |
 | `POST /api/slack/webhook` | Slack Events API (no signature check). |
-| `POST /api/slack/commands/*` | `/connect`, `/disconnect`, `/approve`, `/script`, `/skript`. |
+| `POST /api/slack/commands/*` | `/connect`, `/disconnect`, `/approve`, `/script`, `/skript`, `/sync`, `/pull`. |
 
 ## Configuration
 

@@ -102,6 +102,111 @@ function getTelegramApiUrl(method: string) {
   return `https://api.telegram.org/bot${env.telegramBotToken}/${method}`;
 }
 
+const activeSyncBuffers = new Set<string>();
+
+export function isActiveSyncBufferChat(chatId: unknown): boolean {
+  const id = String(chatId ?? '');
+  if (!id) return false;
+  if (env.telegramSyncChatId && id === String(env.telegramSyncChatId)) return true;
+  return activeSyncBuffers.has(id);
+}
+
+export function registerSyncBufferChat(chatId: string) {
+  const id = String(chatId ?? '').trim();
+  if (id) activeSyncBuffers.add(id);
+}
+
+export function unregisterSyncBufferChat(chatId: string) {
+  activeSyncBuffers.delete(String(chatId ?? ''));
+}
+
+function reconstructTelegramMessageFromForward(forwarded: any, sourceChatId: string, originalMessageId: number) {
+  const origin = forwarded?.forward_origin || {};
+  const from =
+    forwarded?.forward_from ||
+    origin.sender_user ||
+    (origin.type === 'hidden_user' ? { first_name: origin.sender_user_name || 'Telegram user' } : null);
+  const senderChat =
+    forwarded?.forward_from_chat ||
+    origin.sender_chat ||
+    (origin.sender_chat_id ? { id: origin.sender_chat_id } : null);
+  const mediaKeys = [
+    'photo',
+    'document',
+    'video',
+    'audio',
+    'voice',
+    'sticker',
+    'animation',
+    'video_note',
+    'contact',
+    'location',
+    'venue',
+    'poll',
+    'dice',
+  ];
+  const reconstructed: any = {
+    message_id: originalMessageId,
+    from,
+    sender_chat: senderChat,
+    chat: { id: sourceChatId },
+    date: origin.date || forwarded?.forward_date || forwarded?.date,
+    text: forwarded?.text,
+    caption: forwarded?.caption,
+    entities: forwarded?.entities,
+    caption_entities: forwarded?.caption_entities,
+  };
+  for (const key of mediaKeys) {
+    if (forwarded?.[key]) reconstructed[key] = forwarded[key];
+  }
+  return reconstructed;
+}
+
+export async function fetchTelegramMessageById({
+  fromChatId,
+  messageId,
+  bufferChatId,
+}: {
+  fromChatId: string;
+  messageId: number;
+  bufferChatId: string;
+}) {
+  if (!env.telegramBotToken) {
+    return { ok: false, missing: false, error: 'TELEGRAM_BOT_TOKEN is not configured', message: null };
+  }
+  try {
+    const response: any = await axios.post(getTelegramApiUrl('forwardMessage'), {
+      chat_id: bufferChatId,
+      from_chat_id: fromChatId,
+      message_id: messageId,
+      disable_notification: true,
+      protect_content: true,
+    });
+    if (!response.data?.ok) {
+      const description = String(response.data?.description ?? 'Unknown error');
+      if (/not found|MESSAGE_ID_INVALID|message to forward not found/i.test(description)) {
+        return { ok: false, missing: true, error: description, message: null };
+      }
+      return { ok: false, missing: false, error: description, message: null };
+    }
+    const forwarded = response.data.result;
+    try {
+      await deleteTelegramMessage({ chatId: bufferChatId, messageId: forwarded.message_id });
+    } catch (_) {}
+    return {
+      ok: true,
+      missing: false,
+      message: reconstructTelegramMessageFromForward(forwarded, fromChatId, messageId),
+    };
+  } catch (error: any) {
+    const description = String(extractError(error));
+    if (/not found|MESSAGE_ID_INVALID|message to forward not found/i.test(description)) {
+      return { ok: false, missing: true, error: description, message: null };
+    }
+    return { ok: false, missing: false, error: description, message: null };
+  }
+}
+
 async function sendSlackFileToTelegram({ file, chatId, caption = '' }: any) {
   const sourceUrl = file.slackPrivateUrl || file.url;
   if (!sourceUrl) throw new Error('Slack file url is missing');

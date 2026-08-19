@@ -11,7 +11,7 @@ import { logAction } from './action-log';
 import { registerInteraction } from './crm';
 import { identifySender } from './directory';
 import { maybeCreateJiraIssue } from './jira';
-import { findMessageByExternalId, saveJiraIssue, saveMessage } from './persistence';
+import { findMessageByExternalId, saveJiraIssue, saveMessage, updateMessageRecord } from './persistence';
 import { telegramMessageAuthorName } from './membership';
 import { extractSlackNameFromEvent, resolveSlackDisplayName } from './slack-identity';
 import { sendToSlack } from './slack';
@@ -71,6 +71,54 @@ async function persistSkippedMessage(normalized: any, reason: string, extra: any
 // it was actually sent or mocked; pending/unlinked/failed do not.
 function isDelivered(delivery: any): boolean {
   return ['sent', 'mocked'].includes(delivery?.status);
+}
+
+export function shouldRedeliverStoredMessage(existing: any): boolean {
+  if (!existing || existing.delivered) return false;
+  if (existing.metadata?.skipReason) return false;
+  const status = String(existing.delivery?.status ?? '');
+  return ['failed', 'pending_link', 'unlinked', 'skipped', ''].includes(status);
+}
+
+export async function redeliverStoredMessage(existing: any): Promise<any> {
+  const routing: any = await resolveDestinationForMessage({
+    source: existing.source,
+    channelId: existing.channelId,
+    destination: existing.destination,
+    destinationChannelId: existing.destinationChannelId,
+  });
+  if (routing.status !== 'linked') {
+    return { retried: false, delivered: false, reason: routing.reason, message: existing, delivery: existing.delivery };
+  }
+  const delivery =
+    existing.destination === 'slack' || existing.source === 'telegram'
+      ? await sendToSlack({
+          ...existing,
+          destinationChannelId: routing.destinationChannelId,
+          connection: routing.connection,
+        })
+      : await sendToTelegram({ ...existing, destinationChannelId: routing.destinationChannelId });
+  const delivered = isDelivered(delivery);
+  const updated = await updateMessageRecord(existing.source, existing.externalId, {
+    delivery: { ...delivery, delivered, retried: true },
+    delivered,
+    metadata: {
+      ...(existing.metadata ?? {}),
+      redeliveredAt: new Date().toISOString(),
+    },
+  });
+  void logAction({
+    action: delivered ? 'message.forwarded' : 'message.not_forwarded',
+    category: 'message',
+    level: delivered ? 'info' : 'warn',
+    source: existing.source,
+    message: delivered ? 'Redelivered stored inbound message' : `Redelivery did not send (${delivery?.status ?? 'unknown'})`,
+    actor: { userId: String(existing.userId ?? ''), userName: existing.userName ?? '' },
+    connectionInn: routing.connection?.inn ?? existing.metadata?.connectionInn ?? '',
+    externalId: String(existing.externalId ?? ''),
+    context: { reason: 'redeliver', deliveryStatus: delivery?.status ?? null },
+  });
+  return { retried: true, delivered, delivery, message: updated ?? existing };
 }
 
 // Faithful port of services/bridgeService.js

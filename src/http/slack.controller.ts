@@ -12,6 +12,7 @@ import {
 import { findConnectionBySourceChannel } from '../runtime/persistence';
 import { SlackApiService } from '../runtime/slack-api';
 import { ScriptService } from '../runtime/script';
+import { syncLinkedChannel } from '../runtime/sync';
 import { sendTelegramDocumentByUrl, sendTelegramReply } from '../runtime/telegram';
 import { handleDirectMessage, handleApproveCommand } from '../runtime/onboarding-slack';
 
@@ -214,6 +215,51 @@ export class SlackController {
   @Post('commands/skript')
   async skript(@Body() body: any, @Res() res: Response) {
     return this.handleScript(body, res);
+  }
+
+  private async handleSync(body: any, res: Response) {
+    const payload = {
+      slackChannelId: String(body.channel_id || ''),
+      actorId: body.user_id,
+      actorName: body.user_name,
+      text: body.text,
+      response_url: body.response_url,
+    };
+    res.status(200).json({
+      response_type: 'ephemeral',
+      text: '🔄 Подтягиваю сообщения из Telegram (и комментарии Jira, если есть ключ)...',
+    });
+    setImmediate(async () => {
+      try {
+        const result = await syncLinkedChannel(payload);
+        if (payload.response_url) {
+          await axios.post(payload.response_url, {
+            response_type: 'ephemeral',
+            text: result.message,
+          });
+        }
+      } catch (backgroundError: any) {
+        console.error('Background /sync command failed:', backgroundError);
+        if (payload.response_url) {
+          await axios
+            .post(payload.response_url, {
+              response_type: 'ephemeral',
+              text: `❌ /sync failed: ${backgroundError.message}`,
+            })
+            .catch((e: any) => console.error('Failed to post /sync error:', e.message));
+        }
+      }
+    });
+  }
+
+  @Post('commands/sync')
+  async sync(@Body() body: any, @Res() res: Response) {
+    return this.handleSync(body, res);
+  }
+
+  @Post('commands/pull')
+  async pull(@Body() body: any, @Res() res: Response) {
+    return this.handleSync(body, res);
   }
 
   @Post('webhook')

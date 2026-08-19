@@ -347,6 +347,30 @@ export async function findMessageByExternalId(source: string, externalId: string
   );
 }
 
+export async function findMessagesByChannel(source: string, channelId: string) {
+  if (!channelId) return [];
+  if (isMongoConnected()) {
+    return Message.find({ source, channelId: String(channelId) }).sort({ createdAt: 1 }).lean();
+  }
+  return memoryStore.messages.filter(
+    (m) => m.source === source && String(m.channelId) === String(channelId),
+  );
+}
+
+export async function updateMessageRecord(source: string, externalId: string, patch: any) {
+  if (!source || !externalId) return null;
+  const next = { ...patch, updatedAt: new Date() };
+  if (isMongoConnected()) {
+    return Message.findOneAndUpdate({ source, externalId }, { $set: next }, { new: true }).lean();
+  }
+  const existing = memoryStore.messages.find(
+    (m) => m.source === source && String(m.externalId) === String(externalId),
+  );
+  if (!existing) return null;
+  Object.assign(existing, next);
+  return existing;
+}
+
 export async function saveMessage(record: any) {
   if (isMongoConnected()) {
     try {

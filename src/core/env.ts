@@ -57,6 +57,10 @@ export const env = {
   enableLiveForwarding: toBoolean(process.env.ENABLE_LIVE_FORWARDING, true),
   telegramWebhookSecret: process.env.TELEGRAM_WEBHOOK_SECRET ?? '',
   telegramWebhookUrl: process.env.TELEGRAM_WEBHOOK_URL ?? '',
+  // Private Telegram chat used as a silent buffer while /sync reads group
+  // history via forwardMessage (bot must be able to post there). If empty,
+  // /sync falls back to the operator's Telegram DM when they have /start'd the bot.
+  telegramSyncChatId: process.env.TELEGRAM_SYNC_CHAT_ID ?? '',
   serviceName: process.env.SERVICE_NAME ?? 'paycomconnect',
   serviceClients,
   serviceAuthEnabled:

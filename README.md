@@ -120,7 +120,7 @@ curl -X POST http://localhost:9010/api/mock/slack -H 'Content-Type: application/
 
 - `POST /api/telegram/webhook` — Telegram (онбординг, callback-визард, connect, мост).
 - `POST /api/slack/webhook` — Slack Events (онбординг DM, мост).
-- `POST /api/slack/commands/{connect,disconnect,approve,script,skript}` — slash-команды.
+- `POST /api/slack/commands/{connect,disconnect,approve,script,skript,sync,pull}` — slash-команды.
 
 ## Принцип работы
 

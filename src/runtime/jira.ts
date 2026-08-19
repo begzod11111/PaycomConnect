@@ -5,6 +5,14 @@ import { env } from '../core/env';
 // Faithful port of services/jiraService.js
 const jiraKeywords = [/оплат/i, /problem/i, /issue/i, /error/i, /ошиб/i, /не работает/i, /bug/i, /incident/i];
 
+function jiraAuthHeader() {
+  return `Basic ${Buffer.from(`${env.jiraEmail}:${env.jiraApiToken}`).toString('base64')}`;
+}
+
+function jiraApiRoot() {
+  return env.jiraBaseUrl.replace(/\/$/, '');
+}
+
 function buildAdfDescription(message: any) {
   const text = [
     `Источник: ${message.source}`,
@@ -52,7 +60,7 @@ export async function maybeCreateJiraIssue(message: any) {
 
   try {
     const response = await axios.post(
-      `${env.jiraBaseUrl.replace(/\/$/, '')}/rest/api/3/issue`,
+      `${jiraApiRoot()}/rest/api/3/issue`,
       {
         fields: {
           project: { key: env.jiraProjectKey },
@@ -63,7 +71,7 @@ export async function maybeCreateJiraIssue(message: any) {
       },
       {
         headers: {
-          Authorization: `Basic ${Buffer.from(`${env.jiraEmail}:${env.jiraApiToken}`).toString('base64')}`,
+          Authorization: jiraAuthHeader(),
           Accept: 'application/json',
           'Content-Type': 'application/json',
         },
@@ -90,4 +98,43 @@ export async function maybeCreateJiraIssue(message: any) {
       payload: error.response?.data ?? {},
     };
   }
+}
+
+export function jiraDocToText(node: any): string {
+  if (!node) return '';
+  if (typeof node === 'string') return node;
+  if (Array.isArray(node)) return node.map(jiraDocToText).join('');
+  if (node.type === 'text') return String(node.text || '');
+  if (node.type === 'hardBreak' || node.type === 'rule') return '\n';
+  const inner = jiraDocToText(node.content);
+  if (node.type === 'paragraph' || node.type === 'heading' || node.type === 'blockquote') {
+    return `${inner}\n`;
+  }
+  if (node.type === 'listItem') return `- ${inner.trim()}\n`;
+  return inner;
+}
+
+export function jiraCommentToPlainText(comment: any): string {
+  const body = comment?.body;
+  if (typeof body === 'string') return body.trim();
+  return jiraDocToText(body).trim();
+}
+
+export async function listJiraIssueComments(issueKey: string): Promise<any[]> {
+  if (!issueKey || !env.jiraBaseUrl || !env.jiraEmail || !env.jiraApiToken) return [];
+  const comments: any[] = [];
+  let startAt = 0;
+  const maxResults = 100;
+  for (;;) {
+    const response = await axios.get(`${jiraApiRoot()}/rest/api/3/issue/${encodeURIComponent(issueKey)}/comment`, {
+      params: { startAt, maxResults },
+      headers: { Authorization: jiraAuthHeader(), Accept: 'application/json' },
+    });
+    const batch = Array.isArray(response.data?.comments) ? response.data.comments : [];
+    comments.push(...batch);
+    startAt += batch.length;
+    const total = Number(response.data?.total ?? startAt);
+    if (!batch.length || startAt >= total) break;
+  }
+  return comments;
 }

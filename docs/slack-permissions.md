@@ -16,7 +16,7 @@ Start with this set when the bridge must:
 
 | Scope | Required for | Why it is needed in this codebase |
 | --- | --- | --- |
-| `commands` | Slash commands | Enables `/connect`, `/disconnect`, `/approve`, `/script`, `/skript` endpoints under `/api/slack/commands/*`. |
+| `commands` | Slash commands | Enables `/connect`, `/disconnect`, `/approve`, `/script`, `/skript`, `/sync`, `/pull` endpoints under `/api/slack/commands/*`. |
 | `chat:write` | Slack outbound messages | Used by `chat.postMessage` for bridged messages, onboarding notifications, command status messages, and DMs. |
 | `chat:write.customize` | Telegram user imitation in Slack | Allows `username`, `icon_url`, or `icon_emoji` in `chat.postMessage`, so Telegram messages can appear with the Telegram sender name/avatar. Slack still shows that the message was sent by the app. |
 | `channels:history` | Public-channel message events | Needed only if the app subscribes to normal public channel message events (`message.channels`). |
@@ -88,6 +88,8 @@ Configure Slack slash commands to these request URLs:
 /approve     -> https://<your-domain>/api/slack/commands/approve
 /script      -> https://<your-domain>/api/slack/commands/script
 /skript      -> https://<your-domain>/api/slack/commands/skript
+/sync        -> https://<your-domain>/api/slack/commands/sync
+/pull        -> https://<your-domain>/api/slack/commands/pull
 ```
 
 ## Slack sender names in Telegram

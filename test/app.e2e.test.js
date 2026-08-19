@@ -18,6 +18,11 @@ const {
   resetGroupConnectSessions,
   putGroupConnectSession,
 } = require('../dist/runtime/telegram-webhook');
+const {
+  syncLinkedChannel,
+  setTelegramHistoryFetcherForTests,
+  setSyncBufferChatForTests,
+} = require('../dist/runtime/sync');
 
 let app;
 let server;
@@ -36,6 +41,8 @@ test.after(async () => {
 test.beforeEach(() => {
   resetMemoryStore();
   resetGroupConnectSessions();
+  setTelegramHistoryFetcherForTests(null);
+  setSyncBufferChatForTests('');
 });
 
 test('GET /api/health returns service status', async () => {
@@ -560,3 +567,144 @@ test('telegram duplicate of the same chat id is logged instead of silently dropp
   const logs = await request(server).get('/api/logs/recent');
   assert.ok(logs.body.some((entry) => entry.action === 'message.duplicate'));
 });
+
+test('telegram PINFL is hyphenated for Slack and flagged on delivery', async () => {
+  await linkTelegramSlackPair({
+    inn: '402545947',
+    telegramChatId: '-1003990461674',
+    slackChannelId: 'C0BQR8N9RDZ',
+    slackChannelName: 'bushlyakova',
+  });
+
+  const response = await request(server).post('/api/mock/telegram').send({
+    messageId: '28',
+    userId: '6936391177',
+    userName: 'Rogneda & Docveris',
+    channelId: '-1003990461674',
+    text: '31808995970049',
+  });
+
+  assert.equal(response.status, 201);
+  assert.equal(response.body.delivery.status, 'mocked');
+  assert.equal(response.body.delivery.pinflRewritten, true);
+  assert.equal(response.body.message.text, '31808995970049');
+});
+
+test('slack /sync command acknowledges immediately', async () => {
+  const ack = await request(server)
+    .post('/api/slack/commands/sync')
+    .type('form')
+    .send({
+      text: 'telegram 10',
+      channel_id: 'C-missing',
+      user_id: 'U-1',
+      user_name: 'slack.manager',
+    });
+  assert.equal(ack.status, 200);
+  assert.equal(ack.body.response_type, 'ephemeral');
+  assert.match(ack.body.text, /Подтягиваю/i);
+});
+
+test('slack /sync pulls missing telegram history into the linked channel', async () => {
+  await linkTelegramSlackPair({
+    inn: '303030303',
+    telegramChatId: '-100303',
+    slackChannelId: 'C-303',
+    slackChannelName: 'inn-303',
+  });
+
+  setSyncBufferChatForTests('12345');
+  setTelegramHistoryFetcherForTests(async ({ messageId }) => {
+    if (Number(messageId) === 25) {
+      return {
+        ok: true,
+        message: {
+          message_id: 25,
+          from: { id: 6936391177, first_name: 'Rogneda' },
+          chat: { id: '-100303', title: 'BUSHLYAKOVA LYUBOV', type: 'supergroup' },
+          date: 1787118000,
+          text: 'предыдущее сообщение до 26',
+        },
+      };
+    }
+    if (Number(messageId) === 27) {
+      return {
+        ok: true,
+        message: {
+          message_id: 27,
+          from: { id: 6936391177, first_name: 'Rogneda' },
+          chat: { id: '-100303', type: 'supergroup' },
+          date: 1787118300,
+          text: 'сообщение после 26',
+        },
+      };
+    }
+    if (Number(messageId) === 1) {
+      return {
+        ok: true,
+        message: {
+          message_id: 1,
+          from: { is_bot: true, id: 1 },
+          chat: { id: '-100303' },
+          text: 'bot should be skipped',
+        },
+      };
+    }
+    return { ok: false, missing: true, message: null };
+  });
+
+  const result = await syncLinkedChannel({
+    slackChannelId: 'C-303',
+    actorId: 'U-1',
+    actorName: 'slack.manager',
+    text: 'telegram 30',
+  });
+  assert.equal(result.ok, true);
+  assert.equal(result.telegram.forwarded, 2);
+  assert.equal(result.telegram.skippedConfidential >= 1, true);
+
+  const messages = await request(server).get('/api/messages/recent?limit=20');
+  const texts = messages.body.map((item) => item.text);
+  assert.ok(texts.includes('предыдущее сообщение до 26'));
+  assert.ok(texts.includes('сообщение после 26'));
+  assert.ok(!texts.includes('bot should be skipped'));
+});
+
+test('slack /sync redelivers undelivered telegram rows after the pair is linked', async () => {
+  await request(server).post('/api/mock/telegram').send({
+    messageId: 'tg-connect-pending-sync',
+    userId: '1001',
+    userName: 'Manager Ali',
+    channelId: '-100404',
+    text: '/connect 404404404',
+  });
+
+  await request(server).post('/api/mock/telegram').send({
+    messageId: '41',
+    userId: '7001',
+    userName: 'Client',
+    channelId: '-100404',
+    text: 'сообщение пока Slack не подключен',
+  });
+
+  await request(server).post('/api/slack/commands/connect').type('form').send({
+    text: '404404404',
+    channel_id: 'C-404',
+    channel_name: 'inn-404',
+    user_id: 'U-1',
+    user_name: 'slack.manager',
+  });
+
+  const result = await syncLinkedChannel({
+    slackChannelId: 'C-404',
+    text: 'telegram 10',
+  });
+  assert.equal(result.ok, true);
+  assert.ok(result.telegram.retried >= 1);
+
+  const messages = await request(server).get('/api/messages/recent');
+  const stored = messages.body.find((item) => item.externalId === '-100404:41' || item.externalId === '41');
+  assert.ok(stored);
+  assert.equal(stored.delivered, true);
+});
+

@@ -2,6 +2,7 @@ import axios from 'axios';
 
 import { env } from '../core/env';
 import { escapeSlackText, telegramEntitiesToSlackMrkdwn } from './message-format';
+import { applyPinflMaskForSlack, slackPinflNoticeBlock } from './pinfl';
 import { SlackUser } from './models';
 
 // Faithful port of services/slackService.js (outbound Telegram -> Slack delivery).
@@ -141,6 +142,10 @@ async function buildSlackMessagePayload(message: any) {
       elements: [{ type: 'mrkdwn', text: `📎 Вложения: ${message.files.map((file: any) => escapeSlackText(file.name || file.type)).join(', ')}` }],
     });
   }
+  // Staff-only hint. Slack webhook ignores bot_message, so this never crosses back to Telegram.
+  if (message.pinflRewritten) {
+    blocks.push(slackPinflNoticeBlock());
+  }
 
   return { text: defaultText, blocks, customizeFields };
 }
@@ -224,15 +229,28 @@ async function uploadTelegramFileToSlack({ file, channel }: any) {
 
 export async function sendToSlack(message: any) {
   const channel = message.destinationChannelId || env.defaultSlackChannelId || message.channelId;
+  let forwardedText =
+    message.source === 'telegram' ? await buildTelegramToSlackText(message) : escapeSlackText(message.text);
+  const pinfl =
+    message.source === 'telegram' ? applyPinflMaskForSlack(forwardedText) : { text: forwardedText, rewritten: false, count: 0 };
+  forwardedText = pinfl.text;
 
   if (!env.enableLiveForwarding || !env.slackBotToken || !channel) {
-    return { status: 'mocked', mode: 'mock', target: channel || 'slack-channel-not-configured' };
+    return {
+      status: 'mocked',
+      mode: 'mock',
+      target: channel || 'slack-channel-not-configured',
+      pinflRewritten: pinfl.rewritten,
+      pinflCount: pinfl.count,
+    };
   }
 
   try {
-    const forwardedText =
-      message.source === 'telegram' ? await buildTelegramToSlackText(message) : escapeSlackText(message.text);
-    const payload = await buildSlackMessagePayload({ ...message, forwardedText });
+    const payload = await buildSlackMessagePayload({
+      ...message,
+      forwardedText,
+      pinflRewritten: pinfl.rewritten,
+    });
     const customizeFields = payload.customizeFields ?? getSlackCustomizeFields();
     const baseBody: any = { channel, text: payload.text, ...(payload.blocks ? { blocks: payload.blocks } : {}) };
 
@@ -283,7 +301,14 @@ export async function sendToSlack(message: any) {
       }
     }
 
-    return { status: 'sent', mode: 'live', target: channel, providerMessageId: response.data?.ts ?? null };
+    return {
+      status: 'sent',
+      mode: 'live',
+      target: channel,
+      providerMessageId: response.data?.ts ?? null,
+      pinflRewritten: pinfl.rewritten,
+      pinflCount: pinfl.count,
+    };
   } catch (error) {
     return { status: 'failed', mode: 'live', target: channel, error: extractError(error) };
   }

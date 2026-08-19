@@ -11,6 +11,7 @@ import {
   answerCallbackQuery,
   deleteTelegramMessage,
   editTelegramMessage,
+  isActiveSyncBufferChat,
   sendTelegramMessageWithKeyboard,
   sendTelegramReply,
 } from './telegram';
@@ -454,6 +455,10 @@ export async function handleTelegramUpdate(update: any): Promise<void> {
   if (!message) return;
 
   const chatId = message.chat?.id;
+  if (isActiveSyncBufferChat(chatId)) return;
+  if (message.chat?.type === 'private' && (message.forward_origin || message.forward_from || message.forward_date)) {
+    return;
+  }
 
   // Group → supergroup upgrades change the chat id. Remap the connection so
   // subsequent messages still find the Slack channel.

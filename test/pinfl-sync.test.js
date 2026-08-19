@@ -14,6 +14,8 @@ const {
   parseSyncCommandText,
   telegramHistorySkipReason,
   parseTelegramNumericId,
+  listIdsToFetch,
+  buildSyncAckText,
 } = require('../dist/runtime/sync');
 
 test('Uzbekistan PINFL example is detected and hyphenated for Slack', () => {
@@ -48,11 +50,49 @@ test('Slack-only PINFL notice is staff copy, not a Telegram instruction', () => 
   assert.doesNotMatch(PINFL_SLACK_NOTICE, /клиент|merchant|напишите/i);
 });
 
-test('parseSyncCommandText reads scope and lookback', () => {
-  assert.deepEqual(parseSyncCommandText(''), { scope: 'all', lookback: 200 });
-  assert.deepEqual(parseSyncCommandText('telegram 50'), { scope: 'telegram', lookback: 50 });
-  assert.deepEqual(parseSyncCommandText('jira'), { scope: 'jira', lookback: 200 });
-  assert.deepEqual(parseSyncCommandText('tg 15'), { scope: 'telegram', lookback: 15 });
+test('parseSyncCommandText defaults to last 50 and supports limits / full chat', () => {
+  assert.deepEqual(parseSyncCommandText(''), { scope: 'both', window: 'last', limit: 50 });
+  assert.deepEqual(parseSyncCommandText('telegram 50'), { scope: 'telegram', window: 'last', limit: 50 });
+  assert.deepEqual(parseSyncCommandText('jira'), { scope: 'jira', window: 'last', limit: 50 });
+  assert.deepEqual(parseSyncCommandText('tg 10'), { scope: 'telegram', window: 'last', limit: 10 });
+  assert.deepEqual(parseSyncCommandText('100'), { scope: 'both', window: 'last', limit: 100 });
+  assert.deepEqual(parseSyncCommandText('all'), { scope: 'both', window: 'full', limit: 50 });
+  assert.deepEqual(parseSyncCommandText('telegram all'), { scope: 'telegram', window: 'full', limit: 50 });
+});
+
+test('listIdsToFetch compares Telegram ids to already-sent ones instead of rescanning them', () => {
+  const delivered = [];
+  for (let id = 4951; id <= 5000; id += 1) delivered.push(id);
+  const last = listIdsToFetch({
+    knownIds: [5000],
+    deliveredIds: delivered,
+    window: 'last',
+    limit: 50,
+    newerProbe: 8,
+  });
+  assert.equal(last.windowStart, 4951);
+  assert.equal(last.windowEnd, 5008);
+  assert.equal(last.alreadyOk, 50);
+  assert.deepEqual(last.toFetch, [5001, 5002, 5003, 5004, 5005, 5006, 5007, 5008]);
+
+  const hole = listIdsToFetch({
+    knownIds: [26],
+    deliveredIds: [26],
+    window: 'last',
+    limit: 50,
+    newerProbe: 2,
+  });
+  assert.ok(hole.toFetch.includes(25));
+  assert.ok(!hole.toFetch.includes(26));
+  assert.ok(hole.toFetch.includes(27));
+});
+
+test('full-chat sync ack warns that a long chat runs in the background', () => {
+  const ack = buildSyncAckText({ scope: 'both', window: 'full', limit: 50 });
+  assert.match(ack, /весь/i);
+  assert.match(ack, /фон/i);
+  const last = buildSyncAckText({ scope: 'both', window: 'last', limit: 10 });
+  assert.match(last, /10/);
 });
 
 test('telegramHistorySkipReason drops service/slash/bot/empty, keeps ordinary text', () => {

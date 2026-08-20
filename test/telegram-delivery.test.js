@@ -65,3 +65,28 @@ test('normalizeInboundMessage: sticker is not empty content', () => {
   assert.equal(normalized.files.length, 1);
   assert.equal(normalized.files[0].type, 'sticker');
 });
+
+test('normalizeInboundMessage: telegram reply and slack thread are captured', () => {
+  const telegram = normalizeInboundMessage('telegram', {
+    message: {
+      message_id: 4,
+      chat: { id: -1004, type: 'supergroup' },
+      from: { id: 1, first_name: 'Client' },
+      text: 'reply',
+      reply_to_message: { message_id: 3, text: 'parent' },
+    },
+  });
+  assert.equal(telegram.metadata.replyToTelegramMessageId, '3');
+  assert.equal(telegram.replyToMessageId, '3');
+
+  const slack = normalizeInboundMessage('slack', {
+    ts: '2.002',
+    thread_ts: '2.001',
+    userId: 'U1',
+    channelId: 'C1',
+    text: 'thread reply',
+  });
+  assert.equal(slack.metadata.threadTs, '2.001');
+  assert.equal(slack.threadTs, '2.001');
+  assert.equal(slack.externalId, '2.002');
+});

@@ -17,6 +17,19 @@ import { telegramMessageAuthorName } from './membership';
 import { extractSlackNameFromEvent, resolveSlackDisplayName } from './slack-identity';
 import { sendToSlack } from './slack';
 import { sendToTelegram } from './telegram';
+import { classifySlackInbound, slackMessageTs, slackThreadTs } from './slack-events';
+import {
+  findExistingForMutation,
+  isTelegramBotUpdate,
+  isTelegramEditPayload,
+  processBridgedDelete,
+  processBridgedEdit,
+  resolveReplyContext,
+  telegramForwardFromName,
+  telegramRawMessage,
+  telegramReplyToMessageId,
+  telegramSameChatForwardMessageId,
+} from './message-sync';
 
 // Content shape of a normalized message: pure text, a file/attachment, both, or empty.
 function classifyMessageFormat(message: any): 'text' | 'file' | 'mixed' | 'empty' {
@@ -220,9 +233,12 @@ export function telegramExternalId(channelId: unknown, messageId: unknown): stri
 }
 
 function normalizeTelegramPayload(payload: any) {
-  const message = payload.message ?? payload.edited_message ?? payload.channel_post ?? payload.edited_channel_post ?? payload;
+  const message = telegramRawMessage(payload);
   const channelId = String(message.chat?.id ?? payload.channelId ?? env.defaultTelegramChatId ?? '');
   const rawMessageId = message.message_id ?? payload.messageId ?? payload.externalId;
+  const forwardedFrom = telegramForwardFromName(message);
+  const replyToTelegramMessageId = telegramReplyToMessageId(message);
+  const forwardFromTelegramMessageId = telegramSameChatForwardMessageId(message);
 
   return {
     source: 'telegram',
@@ -238,6 +254,7 @@ function normalizeTelegramPayload(payload: any) {
     textEntities: message.entities ?? message.caption_entities ?? payload.textEntities ?? [],
     files: normalizeFiles(payload.files ?? collectTelegramFiles(message)),
     messageTimestamp: toIsoTimestamp(message.date ?? payload.timestamp ?? Date.now()),
+    replyToMessageId: replyToTelegramMessageId || undefined,
     metadata: {
       rawType: payload.sync ? 'telegram_sync' : payload.update_id ? 'telegram_webhook' : 'telegram_mock',
       updateId: payload.update_id ?? null,
@@ -245,34 +262,54 @@ function normalizeTelegramPayload(payload: any) {
       chatType: message.chat?.type ?? payload.chatType ?? '',
       telegramUsername: message.from?.username ?? message.sender_chat?.username ?? '',
       backfilled: Boolean(payload.sync),
+      telegramMessageId: rawMessageId != null ? String(rawMessageId) : '',
+      isEdit: isTelegramEditPayload(payload),
+      replyToTelegramMessageId,
+      forwardedFrom,
+      forwardFromTelegramMessageId,
     },
     forceJira: Boolean(payload.forceJira),
   };
 }
 
 function normalizeSlackPayload(payload: any) {
-  const event = payload.event ?? payload;
+  const classified = classifySlackInbound(payload);
+  const envelope = classified.envelope;
+  const message = classified.message ?? envelope;
+  const slackTs = slackMessageTs(message, envelope, payload);
+  const clientMsgId = String(message?.client_msg_id ?? envelope?.client_msg_id ?? payload.client_msg_id ?? '').trim();
+  const threadTs = slackThreadTs(message, envelope);
+  const externalId = String(
+    slackTs || clientMsgId || payload.event_id || envelope?.event_ts || payload.externalId || randomUUID(),
+  );
+
   return {
     source: 'slack',
     destination: 'telegram',
-    externalId: String(event.client_msg_id ?? payload.event_id ?? event.event_ts ?? randomUUID()),
-    userId: String(event.user ?? payload.userId ?? 'slack-user-unknown'),
+    externalId,
+    userId: String(message?.user ?? envelope?.user ?? payload.userId ?? 'slack-user-unknown'),
     // Prefer an explicit name (mock/tests) or one Slack already put in the
     // callback payload. When neither is present we leave this empty so the
     // bridge can resolve it (directory / users.info) before delivery instead of
     // leaking the raw Slack user id into Telegram.
-    userName: String(payload.userName ?? extractSlackNameFromEvent(event) ?? '').trim(),
-    channelId: String(event.channel ?? payload.channelId ?? env.defaultSlackChannelId ?? ''),
+    userName: String(payload.userName ?? extractSlackNameFromEvent(message) ?? extractSlackNameFromEvent(envelope) ?? '').trim(),
+    channelId: String(envelope?.channel ?? message?.channel ?? payload.channelId ?? env.defaultSlackChannelId ?? ''),
     destinationChannelId: payload.destinationChannelId ?? env.defaultTelegramChatId ?? '',
-    text: event.text ?? payload.text ?? '',
-    files: normalizeFiles(event.files ?? payload.files ?? []),
-    messageTimestamp: toIsoTimestamp(event.ts ?? payload.timestamp ?? Date.now()),
+    text: message?.text ?? envelope?.text ?? payload.text ?? '',
+    files: normalizeFiles(message?.files ?? envelope?.files ?? payload.files ?? []),
+    messageTimestamp: toIsoTimestamp(slackTs || envelope?.ts || payload.timestamp || Date.now()),
+    threadTs: threadTs || undefined,
     metadata: {
       rawType: payload.event ? 'slack_webhook' : 'slack_mock',
       eventId: payload.event_id ?? null,
-      eventType: event.type ?? null,
-      subtype: event.subtype ?? null,
+      eventType: envelope?.type ?? payload.type ?? null,
+      subtype: envelope?.subtype ?? message?.subtype ?? null,
       channelName: payload.channel_name ?? payload.channelName ?? '',
+      slackTs,
+      clientMsgId,
+      threadTs,
+      inboundKind: classified.kind,
+      inboundReason: classified.reason ?? '',
     },
     forceJira: Boolean(payload.forceJira),
   };
@@ -315,9 +352,37 @@ export async function processInboundMessage(source: string, payload: any): Promi
 }
 
 async function processInboundMessageBody(source: string, payload: any): Promise<any> {
+  if (source === 'telegram' && isTelegramBotUpdate(payload)) {
+    return { duplicate: false, ignored: true, reason: 'ignored_bot_update' };
+  }
+
+  const slackClassified = source === 'slack' ? classifySlackInbound(payload) : null;
+  const inboundKind =
+    slackClassified?.kind === 'edit' || (source === 'telegram' && isTelegramEditPayload(payload))
+      ? 'edit'
+      : slackClassified?.kind === 'delete'
+        ? 'delete'
+        : slackClassified?.kind === 'ignore'
+          ? 'ignore'
+          : 'create';
+
   const normalized: any = normalizeInboundMessage(source, payload);
 
-  const dedupeKey = `${normalized.source}:${normalized.externalId}`;
+  if (inboundKind === 'ignore') {
+    const ignoredReason = slackClassified?.reason || 'ignored_system_notice';
+    void logAction({
+      action: 'message.skipped',
+      category: 'message',
+      source: normalized.source,
+      message: `Ignored Slack non-message event: ${ignoredReason}`,
+      externalId: String(normalized.externalId ?? ''),
+      context: { eventType: normalized.metadata?.eventType, subtype: normalized.metadata?.subtype, reason: ignoredReason },
+    });
+    return { duplicate: false, ignored: true, reason: ignoredReason };
+  }
+
+  const isMutation = inboundKind === 'edit' || inboundKind === 'delete';
+  const dedupeKey = `${inboundKind}:${normalized.source}:${normalized.externalId}:${inboundKind === 'create' ? '' : String(normalized.text ?? '').slice(0, 80)}`;
   if (processedMessageIds.has(dedupeKey)) {
     void logAction({
       action: 'message.duplicate',
@@ -327,66 +392,37 @@ async function processInboundMessageBody(source: string, payload: any): Promise<
       message: 'Dropped by in-memory dedupe (already processed this process)',
       actor: { userId: String(normalized.userId ?? ''), userName: normalized.userName ?? '' },
       externalId: String(normalized.externalId ?? ''),
-      context: { channelId: normalized.channelId, reason: 'in_memory_dedupe' },
+      context: { channelId: normalized.channelId, reason: 'in_memory_dedupe', inboundKind },
     });
     return { duplicate: true, ignored: true, reason: 'in_memory_dedupe' };
   }
 
   void logAction({
-    action: 'message.received',
+    action: inboundKind === 'edit' ? 'message.edit.received' : inboundKind === 'delete' ? 'message.delete.received' : 'message.received',
     category: 'message',
     source: normalized.source,
-    message: `Inbound ${normalized.source} message received`,
+    message: `Inbound ${normalized.source} ${inboundKind} received`,
     actor: { userId: String(normalized.userId ?? ''), userName: normalized.userName ?? '' },
     externalId: String(normalized.externalId ?? ''),
     context: {
       channelId: normalized.channelId,
       format: classifyMessageFormat(normalized),
+      inboundKind,
     },
   });
 
-  if (source === 'slack') {
-    // Membership/system events (people added to or removed from a Slack channel)
-    // must not cross over to Telegram — they should stay on the Slack side only.
-    const ignoredEventTypes = new Set([
-      'member_joined_channel',
-      'member_left_channel',
-      'channel_created',
-      'channel_archive',
-      'channel_unarchive',
-    ]);
-    const ignoredSubtypes = new Set([
-      'bot_message',
-      'channel_join',
-      'channel_leave',
-      'channel_topic',
-      'channel_purpose',
-      'channel_name',
-      'channel_archive',
-      'channel_unarchive',
-      'message_changed',
-      'message_deleted',
-      'thread_broadcast',
-    ]);
-    const ignoredReason = ignoredEventTypes.has(normalized.metadata?.eventType)
-      ? `ignored_event:${normalized.metadata?.eventType}`
-      : ignoredSubtypes.has(normalized.metadata?.subtype)
-        ? `ignored_subtype:${normalized.metadata?.subtype}`
-        : '';
-    if (ignoredReason) {
-      void logAction({
-        action: 'message.skipped',
-        category: 'message',
-        source: normalized.source,
-        message: `Ignored Slack membership/system event: ${ignoredReason}`,
-        externalId: String(normalized.externalId ?? ''),
-        context: { eventType: normalized.metadata?.eventType, subtype: normalized.metadata?.subtype },
-      });
-      return { duplicate: false, ignored: true, reason: ignoredReason };
-    }
-  }
-
   if (!normalized.userId) throw new Error('User identifier is required');
+
+  if (isMutation) {
+    if (source === 'slack' && !normalized.userName) {
+      const event = payload.event ?? payload;
+      normalized.userName = (await resolveSlackDisplayName(normalized.userId, event)) || 'Slack user';
+    }
+    const existing = await findExistingForMutation(source, normalized);
+    processedMessageIds.set(dedupeKey, Date.now());
+    if (inboundKind === 'edit') return processBridgedEdit(normalized, existing);
+    return processBridgedDelete(normalized, existing);
+  }
 
   // Content-less updates (service messages, membership/system events, reactions,
   // …) must never be forwarded as an empty message on the far side.
@@ -481,6 +517,8 @@ async function processInboundMessageBody(source: string, payload: any): Promise<
 
   processedMessageIds.set(dedupeKey, Date.now());
 
+  await resolveReplyContext(normalized);
+
   const crmResult = await registerInteraction(normalized);
   const sender = await identifySender(normalized.source, normalized.userId);
   const format = classifyMessageFormat(normalized);
@@ -513,7 +551,13 @@ async function processInboundMessageBody(source: string, payload: any): Promise<
           reason: routing.reason,
         };
 
+  if (routing.destinationChannelId) {
+    normalized.destinationChannelId = routing.destinationChannelId;
+  }
+
   const delivered = isDelivered(delivery);
+  const deliveryAny: any = delivery;
+  const providerMessageId = deliveryAny?.providerMessageId != null ? String(deliveryAny.providerMessageId) : '';
 
   const message = await saveMessage({
     ...normalized,
@@ -528,6 +572,17 @@ async function processInboundMessageBody(source: string, payload: any): Promise<
       ...normalized.metadata,
       connectionStatus: routing.status,
       connectionInn: routing.connection?.inn ?? null,
+      slackTs:
+        normalized.source === 'slack'
+          ? normalized.metadata?.slackTs || normalized.externalId
+          : providerMessageId || normalized.metadata?.slackTs || '',
+      telegramMessageId:
+        normalized.source === 'telegram'
+          ? normalized.metadata?.telegramMessageId || String(normalized.externalId).split(':').pop()
+          : providerMessageId || normalized.metadata?.telegramMessageId || '',
+      threadTs: deliveryAny?.threadTs || normalized.metadata?.threadTs || normalized.threadTs || '',
+      replyToTelegramMessageId:
+        deliveryAny?.replyToMessageId || normalized.metadata?.replyToTelegramMessageId || normalized.replyToMessageId || '',
     },
   });
 

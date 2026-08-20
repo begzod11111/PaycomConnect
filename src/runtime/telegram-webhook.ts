@@ -479,6 +479,9 @@ export async function handleTelegramUpdate(update: any): Promise<void> {
     return;
   }
 
+  // Bot-authored edits (including our own far-side copy) must not loop back.
+  if ((update.edited_message || update.edited_channel_post) && message.from?.is_bot) return;
+
   const userId = message.from?.id ?? message.sender_chat?.id ?? message.chat?.id;
   const chatType = message.chat?.type;
   const userName = telegramMessageAuthorName(message);
@@ -528,6 +531,15 @@ export async function handleTelegramUpdate(update: any): Promise<void> {
   }
 
   logTelegramGroupReceipt(update, message);
+
+  if (update.edited_message || update.edited_channel_post) {
+    logTelegramGroupReceipt(update, message, {
+      action: 'telegram.update.edit',
+      text: 'Telegram edited group message received',
+    });
+    await processInboundMessage('telegram', update);
+    return;
+  }
 
   // ── group chat: /connect two-step session ────────────────────────────────────
   if (messageText === `/start${env.telegramBotName}` || messageText === '/start') {

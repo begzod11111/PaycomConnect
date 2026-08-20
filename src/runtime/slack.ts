@@ -256,11 +256,14 @@ export async function sendToSlack(message: any) {
     message.source === 'telegram' ? applyPinflMaskForSlack(forwardedText) : { text: forwardedText, rewritten: false, count: 0 };
   forwardedText = pinfl.text;
 
+  const threadTs = String(message.threadTs ?? message.metadata?.threadTs ?? '').trim();
   if (!env.enableLiveForwarding || !env.slackBotToken || !channel) {
     return {
       status: 'mocked',
       mode: 'mock',
       target: channel || 'slack-channel-not-configured',
+      providerMessageId: `mock-slack:${message.externalId || Date.now()}`,
+      threadTs: threadTs || undefined,
       pinflRewritten: pinfl.rewritten,
       pinflCount: pinfl.count,
     };
@@ -273,7 +276,9 @@ export async function sendToSlack(message: any) {
       pinflRewritten: pinfl.rewritten,
     });
     const customizeFields = payload.customizeFields ?? getSlackCustomizeFields();
+    const threadTs = String(message.threadTs ?? message.metadata?.threadTs ?? '').trim();
     const baseBody: any = { channel, text: payload.text, ...(payload.blocks ? { blocks: payload.blocks } : {}) };
+    if (threadTs) baseBody.thread_ts = threadTs;
 
     let response: any = await axios.post(
       'https://slack.com/api/chat.postMessage',
@@ -327,10 +332,77 @@ export async function sendToSlack(message: any) {
       mode: 'live',
       target: channel,
       providerMessageId: response.data?.ts ?? null,
+      threadTs: threadTs || undefined,
       pinflRewritten: pinfl.rewritten,
       pinflCount: pinfl.count,
     };
   } catch (error) {
     return { status: 'failed', mode: 'live', target: channel, error: extractError(error) };
+  }
+}
+
+export async function updateSlackMessage(message: any) {
+  const channel = message.destinationChannelId || env.defaultSlackChannelId || message.channelId;
+  const ts = String(message.slackTs ?? message.delivery?.providerMessageId ?? message.providerMessageId ?? '').trim();
+  if (!channel || !ts) {
+    return { status: 'failed', mode: 'control', target: channel, error: 'missing_slack_target' };
+  }
+
+  let forwardedText =
+    message.source === 'telegram' ? await buildTelegramToSlackText(message) : escapeSlackText(message.text);
+  const pinfl =
+    message.source === 'telegram' ? applyPinflMaskForSlack(forwardedText) : { text: forwardedText, rewritten: false, count: 0 };
+  forwardedText = pinfl.text;
+
+  if (!env.enableLiveForwarding || !env.slackBotToken) {
+    return { status: 'mocked', mode: 'mock', target: channel, providerMessageId: ts, action: 'edit' };
+  }
+
+  try {
+    const payload = await buildSlackMessagePayload({
+      ...message,
+      forwardedText,
+      pinflRewritten: pinfl.rewritten,
+    });
+    const response: any = await axios.post(
+      'https://slack.com/api/chat.update',
+      {
+        channel,
+        ts,
+        text: payload.text,
+        ...(payload.blocks ? { blocks: payload.blocks } : {}),
+      },
+      { headers: { Authorization: `Bearer ${env.slackBotToken}` } },
+    );
+    if (!response.data?.ok) {
+      return { status: 'failed', mode: 'live', target: channel, error: response.data?.error ?? 'Unknown Slack API error' };
+    }
+    return { status: 'sent', mode: 'live', target: channel, providerMessageId: ts, action: 'edit' };
+  } catch (error) {
+    return { status: 'failed', mode: 'live', target: channel, error: extractError(error) };
+  }
+}
+
+export async function deleteSlackMessage({ channel, ts }: { channel: any; ts: any }) {
+  const channelId = String(channel ?? '').trim();
+  const messageTs = String(ts ?? '').trim();
+  if (!channelId || !messageTs) {
+    return { status: 'failed', mode: 'control', target: channelId, error: 'missing_slack_target' };
+  }
+  if (!env.enableLiveForwarding || !env.slackBotToken) {
+    return { status: 'mocked', mode: 'mock', target: channelId, providerMessageId: messageTs, action: 'delete' };
+  }
+  try {
+    const response: any = await axios.post(
+      'https://slack.com/api/chat.delete',
+      { channel: channelId, ts: messageTs },
+      { headers: { Authorization: `Bearer ${env.slackBotToken}` } },
+    );
+    if (!response.data?.ok) {
+      return { status: 'failed', mode: 'live', target: channelId, error: response.data?.error ?? 'Unknown Slack API error' };
+    }
+    return { status: 'sent', mode: 'live', target: channelId, providerMessageId: messageTs, action: 'delete' };
+  } catch (error) {
+    return { status: 'failed', mode: 'live', target: channelId, error: extractError(error) };
   }
 }

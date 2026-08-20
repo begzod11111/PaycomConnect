@@ -337,6 +337,7 @@ export async function getRecentActionLogs(limit = 50, filter: any = {}) {
 }
 
 export async function findMessageByExternalId(source: string, externalId: string) {
+  if (!source || !externalId) return null;
   if (isMongoConnected()) {
     return Message.findOne({ source, externalId }).lean();
   }
@@ -344,6 +345,74 @@ export async function findMessageByExternalId(source: string, externalId: string
     memoryStore.messages.find(
       (m) => m.source === source && String(m.externalId) === String(externalId),
     ) || null
+  );
+}
+
+function messageMatchesRef(message: any, candidates: string[]): boolean {
+  const values = [
+    message?.externalId,
+    message?.metadata?.slackTs,
+    message?.metadata?.clientMsgId,
+    message?.metadata?.telegramMessageId,
+    message?.delivery?.providerMessageId,
+  ].map((value) => String(value ?? '').trim()).filter(Boolean);
+  return candidates.some((candidate) => values.includes(candidate));
+}
+
+export async function findMessageBySlackRef({ ts, clientMsgId, channelId }: { ts?: any; clientMsgId?: any; channelId?: any }) {
+  const candidates = [ts, clientMsgId].map((value) => String(value ?? '').trim()).filter(Boolean);
+  if (!candidates.length) return null;
+  const channel = String(channelId ?? '').trim();
+
+  if (isMongoConnected()) {
+    const or: any[] = [
+      { source: 'slack', externalId: { $in: candidates } },
+      { 'metadata.slackTs': { $in: candidates } },
+      { 'metadata.clientMsgId': { $in: candidates } },
+      { 'delivery.providerMessageId': { $in: candidates } },
+    ];
+    const query: any = { $or: or };
+    if (channel) {
+      query.$and = [{ $or: [{ channelId: channel }, { destinationChannelId: channel }] }];
+    }
+    return Message.findOne(query).lean();
+  }
+
+  return (
+    memoryStore.messages.find((message) => {
+      if (!messageMatchesRef(message, candidates)) return false;
+      if (!channel) return true;
+      return String(message.channelId ?? '') === channel || String(message.destinationChannelId ?? '') === channel;
+    }) || null
+  );
+}
+
+export async function findMessageByTelegramRef({ chatId, messageId }: { chatId?: any; messageId?: any }) {
+  const id = String(messageId ?? '').trim();
+  const chat = String(chatId ?? '').trim();
+  if (!id) return null;
+  const externalId = chat && id ? `${chat}:${id}` : id;
+
+  const byExternal = await findMessageByExternalId('telegram', externalId);
+  if (byExternal) return byExternal;
+
+  if (isMongoConnected()) {
+    const query: any = {
+      $or: [{ 'metadata.telegramMessageId': id }, { 'delivery.providerMessageId': id }, { 'delivery.providerMessageId': Number(id) }],
+    };
+    if (chat) {
+      query.$and = [{ $or: [{ channelId: chat }, { destinationChannelId: chat }] }];
+    }
+    return Message.findOne(query).lean();
+  }
+
+  return (
+    memoryStore.messages.find((message) => {
+      const ids = [message?.metadata?.telegramMessageId, message?.delivery?.providerMessageId].map((value) => String(value ?? ''));
+      if (!ids.includes(id)) return false;
+      if (!chat) return true;
+      return String(message.channelId ?? '') === chat || String(message.destinationChannelId ?? '') === chat;
+    }) || null
   );
 }
 

@@ -716,3 +716,185 @@ test('slack /sync redelivers undelivered telegram rows after the pair is linked'
   assert.equal(stored.delivered, true);
 });
 
+test('Slack Connect "added to all of" notice is not forwarded to Telegram', async () => {
+  await linkTelegramSlackPair({
+    inn: '303030303',
+    telegramChatId: '-100303',
+    slackChannelId: 'C-303',
+    slackChannelName: 'inn-303',
+  });
+
+  const response = await request(server).post('/api/mock/slack').send({
+    event_id: 'slack-connect-org-share',
+    type: 'message',
+    userId: 'U09BEHZOD',
+    userName: 'Behzod Toirjonov',
+    channelId: 'C-303',
+    text: '<@U09BEHZOD> has added qurilishavtotexta-minot-205778859 to all of TBC Explorers. Members of those workspaces can now be invited to join this channel.',
+  });
+
+  assert.equal(response.status, 201);
+  assert.equal(response.body.ignored, true);
+  assert.equal(response.body.reason, 'ignored_system_notice');
+
+  const summary = await request(server).get('/api/analytics/summary');
+  assert.equal(summary.body.forwardedMessages, 0);
+});
+
+test('author can edit own Slack message across the bridge; another user cannot', async () => {
+  await linkTelegramSlackPair({
+    inn: '313131313',
+    telegramChatId: '-100313',
+    slackChannelId: 'C-313',
+    slackChannelName: 'inn-313',
+  });
+
+  const created = await request(server).post('/api/mock/slack').send({
+    event_id: 'slack-edit-1',
+    ts: '1710000000.000313',
+    userId: 'U313',
+    userName: 'Support Engineer',
+    channelId: 'C-313',
+    text: 'original slack text',
+  });
+  assert.equal(created.body.delivery.status, 'mocked');
+  assert.equal(created.body.message.text, 'original slack text');
+
+  const denied = await request(server).post('/api/mock/slack').send({
+    event: {
+      type: 'message',
+      subtype: 'message_changed',
+      channel: 'C-313',
+      message: { user: 'U999', text: 'hijacked', ts: '1710000000.000313' },
+      previous_message: { user: 'U313', text: 'original slack text', ts: '1710000000.000313' },
+    },
+  });
+  assert.equal(denied.body.ignored, true);
+  assert.equal(denied.body.reason, 'edit_not_author');
+
+  const edited = await request(server).post('/api/mock/slack').send({
+    event: {
+      type: 'message',
+      subtype: 'message_changed',
+      channel: 'C-313',
+      message: { user: 'U313', text: 'edited slack text', ts: '1710000000.000313' },
+      previous_message: { user: 'U313', text: 'original slack text', ts: '1710000000.000313' },
+    },
+  });
+  assert.equal(edited.body.edited, true);
+  assert.equal(edited.body.message.text, 'edited slack text');
+  assert.equal(edited.body.delivery.action, 'edit');
+});
+
+test('deleting a Slack message deletes the Telegram copy', async () => {
+  await linkTelegramSlackPair({
+    inn: '323232323',
+    telegramChatId: '-100323',
+    slackChannelId: 'C-323',
+    slackChannelName: 'inn-323',
+  });
+
+  await request(server).post('/api/mock/slack').send({
+    event_id: 'slack-del-1',
+    ts: '1710000000.000323',
+    userId: 'U323',
+    userName: 'Support Engineer',
+    channelId: 'C-323',
+    text: 'please delete me',
+  });
+
+  const deleted = await request(server).post('/api/mock/slack').send({
+    event: {
+      type: 'message',
+      subtype: 'message_deleted',
+      channel: 'C-323',
+      deleted_ts: '1710000000.000323',
+      previous_message: { user: 'U323', text: 'please delete me', ts: '1710000000.000323' },
+    },
+  });
+  assert.equal(deleted.body.deleted, true);
+  assert.equal(deleted.body.message.metadata.deleted, true);
+  assert.equal(deleted.body.delivery.action, 'delete');
+});
+
+test('author can edit own Telegram message across the bridge', async () => {
+  await linkTelegramSlackPair({
+    inn: '333333333',
+    telegramChatId: '-100333',
+    slackChannelId: 'C-333',
+    slackChannelName: 'inn-333',
+  });
+
+  const created = await request(server).post('/api/mock/telegram').send({
+    message: {
+      message_id: 10,
+      chat: { id: -100333, type: 'supergroup', title: 'TG 333' },
+      from: { id: 5001, first_name: 'Client' },
+      text: 'original telegram text',
+    },
+  });
+  assert.equal(created.body.delivery.status, 'mocked');
+
+  const edited = await request(server).post('/api/mock/telegram').send({
+    edited_message: {
+      message_id: 10,
+      chat: { id: -100333, type: 'supergroup', title: 'TG 333' },
+      from: { id: 5001, first_name: 'Client' },
+      text: 'edited telegram text',
+    },
+  });
+  assert.equal(edited.body.edited, true);
+  assert.equal(edited.body.message.text, 'edited telegram text');
+  assert.equal(edited.body.delivery.action, 'edit');
+});
+
+test('Telegram reply is posted as a Slack thread; Slack thread reply maps back', async () => {
+  await linkTelegramSlackPair({
+    inn: '343434343',
+    telegramChatId: '-100343',
+    slackChannelId: 'C-343',
+    slackChannelName: 'inn-343',
+  });
+
+  const parent = await request(server).post('/api/mock/telegram').send({
+    message: {
+      message_id: 1,
+      chat: { id: -100343, type: 'supergroup', title: 'TG 343' },
+      from: { id: 5001, first_name: 'Client' },
+      text: 'parent from telegram',
+    },
+  });
+  assert.ok(parent.body.delivery.providerMessageId);
+
+  const reply = await request(server).post('/api/mock/telegram').send({
+    message: {
+      message_id: 2,
+      chat: { id: -100343, type: 'supergroup', title: 'TG 343' },
+      from: { id: 5001, first_name: 'Client' },
+      text: 'telegram reply',
+      reply_to_message: { message_id: 1, text: 'parent from telegram' },
+    },
+  });
+  assert.equal(reply.body.delivery.status, 'mocked');
+  assert.equal(reply.body.delivery.threadTs, parent.body.delivery.providerMessageId);
+  assert.equal(reply.body.message.metadata.threadTs, parent.body.delivery.providerMessageId);
+
+  const slackParent = await request(server).post('/api/mock/slack').send({
+    ts: '1710000000.000343',
+    userId: 'U343',
+    userName: 'Support Engineer',
+    channelId: 'C-343',
+    text: 'parent from slack',
+  });
+  const slackReply = await request(server).post('/api/mock/slack').send({
+    ts: '1710000000.000344',
+    thread_ts: '1710000000.000343',
+    userId: 'U343',
+    userName: 'Support Engineer',
+    channelId: 'C-343',
+    text: 'slack thread reply',
+  });
+  assert.equal(slackReply.body.delivery.replyToMessageId, slackParent.body.delivery.providerMessageId);
+});
+
+

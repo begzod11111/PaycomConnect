@@ -207,7 +207,7 @@ export async function fetchTelegramMessageById({
   }
 }
 
-async function sendSlackFileToTelegram({ file, chatId, caption = '' }: any) {
+async function sendSlackFileToTelegram({ file, chatId, caption = '', replyToMessageId }: any) {
   const sourceUrl = file.slackPrivateUrl || file.url;
   if (!sourceUrl) throw new Error('Slack file url is missing');
 
@@ -221,6 +221,10 @@ async function sendSlackFileToTelegram({ file, chatId, caption = '' }: any) {
   const { method, field } = methodAndFieldByMediaType(mediaType);
 
   form.append('chat_id', String(chatId));
+  if (replyToMessageId) {
+    form.append('reply_to_message_id', String(replyToMessageId));
+    form.append('allow_sending_without_reply', 'true');
+  }
   if (caption && supportsCaption(mediaType)) {
     form.append('caption', caption);
     form.append('parse_mode', 'HTML');
@@ -244,7 +248,7 @@ async function downloadSlackFileBinary(file: any) {
   return { filename, mediaType, binary: response.data };
 }
 
-async function sendSlackMediaGroupToTelegram({ files, chatId, caption = '' }: any) {
+async function sendSlackMediaGroupToTelegram({ files, chatId, caption = '', replyToMessageId }: any) {
   const mediaItems: any[] = [];
   const form = new FormData();
   const downloadedFiles = await Promise.all(files.map((file: any) => withRetry(() => downloadSlackFileBinary(file))));
@@ -262,6 +266,10 @@ async function sendSlackMediaGroupToTelegram({ files, chatId, caption = '' }: an
 
   form.append('chat_id', String(chatId));
   form.append('media', JSON.stringify(mediaItems));
+  if (replyToMessageId) {
+    form.append('reply_to_message_id', String(replyToMessageId));
+    form.append('allow_sending_without_reply', 'true');
+  }
 
   const response: any = await withRetry(() => axios.post(getTelegramApiUrl('sendMediaGroup'), form));
   if (!response.data?.ok) throw new Error(response.data?.description ?? 'Failed to send media group');
@@ -357,9 +365,21 @@ export async function editTelegramMessage({ chatId, messageId, text, keyboard }:
   if (!env.telegramBotToken) throw new Error('TELEGRAM_BOT_TOKEN is required');
   const payload: any = { chat_id: chatId, message_id: messageId, text, parse_mode: 'HTML' };
   if (keyboard) payload.reply_markup = { inline_keyboard: keyboard };
-  const response = await axios.post(getTelegramApiUrl('editMessageText'), payload);
-  if (!response.data?.ok) throw new Error(`Failed to edit message: ${response.data?.description ?? 'Unknown error'}`);
-  return { ok: true, result: response.data.result };
+  try {
+    const response = await axios.post(getTelegramApiUrl('editMessageText'), payload);
+    if (!response.data?.ok) throw new Error(response.data?.description ?? 'Unknown error');
+    return { ok: true, result: response.data.result };
+  } catch (error: any) {
+    const description = String(error?.response?.data?.description ?? error?.message ?? '');
+    if (!/message to edit not found|there is no text in the message to edit|message can't be edited/i.test(description)) {
+      throw error instanceof Error ? error : new Error(description || 'Failed to edit message');
+    }
+    const captionPayload: any = { chat_id: chatId, message_id: messageId, caption: text, parse_mode: 'HTML' };
+    if (keyboard) captionPayload.reply_markup = { inline_keyboard: keyboard };
+    const captionResponse = await axios.post(getTelegramApiUrl('editMessageCaption'), captionPayload);
+    if (!captionResponse.data?.ok) throw new Error(captionResponse.data?.description ?? (description || 'Failed to edit caption'));
+    return { ok: true, result: captionResponse.data.result };
+  }
 }
 
 export async function deleteTelegramMessage({ chatId, messageId }: any) {
@@ -369,31 +389,47 @@ export async function deleteTelegramMessage({ chatId, messageId }: any) {
   return { ok: true };
 }
 
+async function telegramAuthorHtml(message: any) {
+  const renderedText = await renderSlackMentionsToTelegramHtml(message.text || '');
+  const authorName = escapeTelegramHtml(String(message.userName || ''));
+  if (authorName && renderedText) return `<b>[${authorName}]</b> : ${renderedText}`;
+  if (authorName) return `<b>[${authorName}]</b>`;
+  return renderedText;
+}
+
+function telegramReplyFields(message: any) {
+  const replyToMessageId = message.replyToMessageId ?? message.metadata?.replyToTelegramMessageId;
+  if (!replyToMessageId) return {};
+  return { reply_to_message_id: Number(replyToMessageId), allow_sending_without_reply: true };
+}
+
 export async function sendToTelegram(message: any) {
   const chatId = message.destinationChannelId || env.defaultTelegramChatId || message.channelId;
+  const replyToMessageId = message.replyToMessageId ?? message.metadata?.replyToTelegramMessageId;
 
   if (!env.enableLiveForwarding || !env.telegramBotToken || !chatId) {
-    return { status: 'mocked', mode: 'mock', target: chatId || 'telegram-chat-not-configured' };
+    return {
+      status: 'mocked',
+      mode: 'mock',
+      target: chatId || 'telegram-chat-not-configured',
+      providerMessageId: `mock-tg:${message.externalId || Date.now()}`,
+      replyToMessageId: replyToMessageId || undefined,
+    };
   }
 
   try {
-    const renderedText = await renderSlackMentionsToTelegramHtml(message.text || '');
-    const authorName = escapeTelegramHtml(String(message.userName || ''));
-    const forwardedText = authorName && renderedText
-      ? `<b>[${authorName}]</b> : ${renderedText}`
-      : authorName
-        ? `<b>[${authorName}]</b>`
-        : renderedText;
-
+    const forwardedText = await telegramAuthorHtml(message);
     const hasFiles = Array.isArray(message.files) && message.files.length > 0;
     let response: any = null;
     const authorCaption = forwardedText;
+    const replyFields = telegramReplyFields(message);
 
     if (!hasFiles) {
       response = await axios.post(getTelegramApiUrl('sendMessage'), {
         chat_id: chatId,
         text: formatText({ ...message, forwardedText }),
         parse_mode: 'HTML',
+        ...replyFields,
       });
     }
 
@@ -411,14 +447,24 @@ export async function sendToTelegram(message: any) {
 
       if (photoVideoFiles.length >= 2) {
         try {
-          response = await sendSlackMediaGroupToTelegram({ files: photoVideoFiles, chatId, caption: authorCaption });
+          response = await sendSlackMediaGroupToTelegram({
+            files: photoVideoFiles,
+            chatId,
+            caption: authorCaption,
+            replyToMessageId,
+          });
           captionSent = true;
         } catch (groupError) {
           for (let index = 0; index < photoVideoFiles.length; index += 1) {
             const file = photoVideoFiles[index];
             try {
               const caption = !captionSent && index === 0 ? authorCaption : '';
-              response = await sendSlackFileToTelegram({ file, chatId, caption });
+              response = await sendSlackFileToTelegram({
+                file,
+                chatId,
+                caption,
+                replyToMessageId: captionSent ? undefined : replyToMessageId,
+              });
               if (caption) captionSent = true;
             } catch (fileError: any) {
               await axios.post(getTelegramApiUrl('sendMessage'), {
@@ -430,7 +476,12 @@ export async function sendToTelegram(message: any) {
         }
       } else if (photoVideoFiles.length === 1) {
         try {
-          response = await sendSlackFileToTelegram({ file: photoVideoFiles[0], chatId, caption: authorCaption });
+          response = await sendSlackFileToTelegram({
+            file: photoVideoFiles[0],
+            chatId,
+            caption: authorCaption,
+            replyToMessageId,
+          });
           captionSent = true;
         } catch (singleMediaError: any) {
           await axios.post(getTelegramApiUrl('sendMessage'), {
@@ -445,10 +496,20 @@ export async function sendToTelegram(message: any) {
         try {
           const caption = !captionSent && index === 0 ? authorCaption : '';
           if (caption && !supportsCaption(resolveTelegramMediaType(file))) {
-            response = await axios.post(getTelegramApiUrl('sendMessage'), { chat_id: chatId, text: caption, parse_mode: 'HTML' });
+            response = await axios.post(getTelegramApiUrl('sendMessage'), {
+              chat_id: chatId,
+              text: caption,
+              parse_mode: 'HTML',
+              ...replyFields,
+            });
             captionSent = true;
           }
-          response = await sendSlackFileToTelegram({ file, chatId, caption });
+          response = await sendSlackFileToTelegram({
+            file,
+            chatId,
+            caption,
+            replyToMessageId: captionSent ? undefined : replyToMessageId,
+          });
           if (caption) captionSent = true;
         } catch (fileError: any) {
           await axios.post(getTelegramApiUrl('sendMessage'), {
@@ -459,7 +520,12 @@ export async function sendToTelegram(message: any) {
       }
 
       if (!captionSent && !message.text) {
-        response = await axios.post(getTelegramApiUrl('sendMessage'), { chat_id: chatId, text: authorCaption, parse_mode: 'HTML' });
+        response = await axios.post(getTelegramApiUrl('sendMessage'), {
+          chat_id: chatId,
+          text: authorCaption,
+          parse_mode: 'HTML',
+          ...replyFields,
+        });
       }
     }
 
@@ -468,8 +534,47 @@ export async function sendToTelegram(message: any) {
       mode: 'live',
       target: chatId,
       providerMessageId: typeof response === 'number' ? response : response?.data?.result?.message_id ?? null,
+      replyToMessageId: replyToMessageId || undefined,
     };
   } catch (error) {
     return { status: 'failed', mode: 'live', target: chatId, error: extractError(error) };
+  }
+}
+
+export async function updateTelegramMessage(message: any) {
+  const chatId = message.destinationChannelId || env.defaultTelegramChatId || message.channelId;
+  const messageId = message.telegramMessageId ?? message.delivery?.providerMessageId ?? message.providerMessageId;
+  if (!chatId || messageId === undefined || messageId === null || messageId === '') {
+    return { status: 'failed', mode: 'control', target: chatId, error: 'missing_telegram_target' };
+  }
+  if (!env.enableLiveForwarding || !env.telegramBotToken) {
+    return { status: 'mocked', mode: 'mock', target: chatId, providerMessageId: messageId, action: 'edit' };
+  }
+  try {
+    const forwardedText = await telegramAuthorHtml(message);
+    await editTelegramMessage({
+      chatId,
+      messageId,
+      text: formatText({ ...message, forwardedText }),
+    });
+    return { status: 'sent', mode: 'live', target: chatId, providerMessageId: messageId, action: 'edit' };
+  } catch (error) {
+    return { status: 'failed', mode: 'live', target: chatId, error: extractError(error) };
+  }
+}
+
+export async function removeTelegramMessage({ chatId, messageId }: { chatId: any; messageId: any }) {
+  const target = String(chatId ?? '').trim();
+  if (!target || messageId === undefined || messageId === null || messageId === '') {
+    return { status: 'failed', mode: 'control', target, error: 'missing_telegram_target' };
+  }
+  if (!env.enableLiveForwarding || !env.telegramBotToken) {
+    return { status: 'mocked', mode: 'mock', target, providerMessageId: messageId, action: 'delete' };
+  }
+  try {
+    await deleteTelegramMessage({ chatId: target, messageId });
+    return { status: 'sent', mode: 'live', target, providerMessageId: messageId, action: 'delete' };
+  } catch (error) {
+    return { status: 'failed', mode: 'live', target, error: extractError(error) };
   }
 }
